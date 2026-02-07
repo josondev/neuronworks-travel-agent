@@ -7,13 +7,12 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 
-// 1. SILENCE LOGS (To prevent JSON corruption)
+// 1. SILENCE LOGS
 const originalLog = console.log;
 console.log = console.error; 
 
 dotenv.config();
 
-// Make sure these paths match where your service files are located
 import { FlightService } from './services/FlightService.js';
 import { AccommodationService } from './services/AccommodationService.js';
 import { CurrencyService } from './services/CurrencyService.js';
@@ -22,9 +21,12 @@ import { PlacesService } from './services/PlacesService.js';
 
 const app = express();
 
-// Allow CORS for everyone
+// FIX 1: Allow CORS
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'] }));
-app.use(express.json());
+
+// FIX 2: REMOVE express.json()! 
+// It was consuming the stream before the SDK could read it.
+// app.use(express.json()); <--- DELETED THIS LINE
 
 const flightService = new FlightService();
 const accommodationService = new AccommodationService();
@@ -32,30 +34,29 @@ const currencyService = new CurrencyService();
 const weatherService = new WeatherService();
 const placesService = new PlacesService();
 
-// Store active sessions
 const sessions = new Map();
 
 app.get('/', (req, res) => {
-  res.status(200).send('Travel MCP Server is Running (JS Version + CORS Fixed)');
+  res.status(200).send('Travel MCP Server is Running (Stream Fix Applied)');
 });
 
 // --- SSE ENDPOINT ---
 app.get('/sse', async (req, res) => {
   console.error('🔗 NEW CONNECTION: Client connected via SSE');
 
-  // FIX 1: Manually set headers (including CORS)
+  // Manual Headers
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache, no-transform',
     'Connection': 'keep-alive',
-    'X-Accel-Buffering': 'no',       // Fixes Cloudflare buffering
-    'Access-Control-Allow-Origin': '*' // Fixes "Connect" button in Inspector
+    'X-Accel-Buffering': 'no',
+    'Access-Control-Allow-Origin': '*' 
   });
 
-  // FIX 2: Monkey Patch (Disable writeHead so SDK doesn't crash Node)
+  // Monkey Patch
   res.writeHead = () => { return res; };
 
-  // FIX 3: Buffer Buster (Send data immediately)
+  // Buffer Buster
   res.write(':' + ' '.repeat(4096) + '\n\n');
 
   const transport = new SSEServerTransport('/message', res);
@@ -143,14 +144,12 @@ app.get('/sse', async (req, res) => {
 
   await server.connect(transport);
 
-  // Capture Session ID
   const sessionId = transport.sessionId;
   if (sessionId) {
       sessions.set(sessionId, transport);
       console.error(`✅ Session Started: ${sessionId}`);
   }
 
-  // Heartbeat Loop
   const keepAlive = setInterval(() => {
     if (res.writable) res.write(':\n\n');
   }, 10000);
@@ -175,6 +174,7 @@ const handleMessage = async (req, res) => {
 
   const transport = sessions.get(sessionId);
   try {
+      // The SDK reads the stream here. If express.json() ran before this, it fails.
       await transport.handlePostMessage(req, res);
       console.error('✅ Message handled');
   } catch (err) {
