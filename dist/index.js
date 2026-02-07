@@ -7,6 +7,10 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 
+// 1. SILENCE LOGS
+const originalLog = console.log;
+console.log = console.error; 
+
 dotenv.config();
 
 import { FlightService } from './services/FlightService.js';
@@ -17,34 +21,52 @@ import { PlacesService } from './services/PlacesService.js';
 
 const app = express();
 
-app.use(cors({ 
-  origin: '*', 
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type']
-}));
+// Allow CORS
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'] }));
 
-app.use(express.json());
-
+// Instantiate Services
 const flightService = new FlightService();
 const accommodationService = new AccommodationService();
 const currencyService = new CurrencyService();
 const weatherService = new WeatherService();
 const placesService = new PlacesService();
 
-// Create a single shared MCP server instance
-function createMCPServer() {
+const sessions = new Map();
+
+app.get('/', (req, res) => {
+  res.status(200).send('Travel MCP Server is Running');
+});
+
+// --- SSE ENDPOINT ---
+app.get('/sse', async (req, res) => {
+  console.error('🔗 NEW CONNECTION: Client connected via SSE');
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+    'Access-Control-Allow-Origin': '*' 
+  });
+
+  res.writeHead = () => { return res; };
+  res.write(':' + ' '.repeat(4096) + '\n\n');
+
+  const transport = new SSEServerTransport('/message', res);
+  
   const server = new Server(
     { name: 'travel-planner-server', version: '0.1.0' },
     { capabilities: { tools: {} } }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    console.error('📋 Tools list requested');
+    console.error('📋 Client requested Tool List');
     return {
       tools: [
+        // 1. FLIGHTS
         {
           name: 'search_flights',
-          description: 'Search for flight prices and schedules',
+          description: 'Search for flight prices',
           inputSchema: {
             type: 'object',
             properties: {
@@ -57,159 +79,177 @@ function createMCPServer() {
             required: ['origin', 'destination', 'departDate']
           }
         },
+        // 2. WEATHER
         {
-          name: 'search_hotels',
-          description: 'Search for hotels',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              city: { type: 'string' },
-              checkIn: { type: 'string' },
-              checkOut: { type: 'string' },
-              guests: { type: 'number', default: 2 }
-            },
-            required: ['city', 'checkIn', 'checkOut']
-          }
+            name: 'get_weather_forecast',
+            description: 'Get weather forecast',
+            inputSchema: {
+                type: 'object',
+                properties: { city: { type: 'string' }, country: { type: 'string' }, startDate: { type: 'string' }, endDate: { type: 'string' } },
+                required: ['city', 'country', 'startDate', 'endDate']
+            }
         },
+        // 3. BUDGET (Now using real logic)
         {
-          name: 'get_weather_forecast',
-          description: 'Get weather forecast',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              city: { type: 'string' },
-              country: { type: 'string' },
-              startDate: { type: 'string' },
-              endDate: { type: 'string' }
-            },
-            required: ['city', 'country', 'startDate', 'endDate']
+            name: 'calculate_trip_budget',
+            description: 'Calculate trip budget',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                destinations: { type: 'array', items: { type: 'string' } },
+                duration: { type: 'number' },
+                travelers: { type: 'number', default: 1 },
+                budgetLevel: { type: 'string', enum: ['budget', 'mid-range', 'luxury'] }
+              },
+              required: ['destinations', 'duration', 'budgetLevel']
+            }
+          },
+          // 4. PLACES (Attractions/Restaurants)
+          {
+            name: 'search_places',
+            description: 'Search for tourist attractions or restaurants',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                location: { type: 'string' },
+                category: { type: 'string', enum: ['tourist_attractions', 'restaurants', 'hotels', 'entertainment', 'nature', 'shopping', 'religion'] },
+                radius: { type: 'number', default: 5000 }
+              },
+              required: ['location']
+            }
+          },
+          // 5. ACCOMMODATION (This was missing!)
+          {
+            name: 'search_hotels',
+            description: 'Search for hotels in a city',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                city: { type: 'string' }
+              },
+              required: ['city']
+            }
+          },
+          // 6. CURRENCY (This was missing!)
+          {
+            name: 'get_exchange_rate',
+            description: 'Convert currency',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                from: { type: 'string' },
+                to: { type: 'string' },
+                amount: { type: 'number', default: 1 }
+              },
+              required: ['from', 'to']
+            }
           }
-        },
-        {
-          name: 'get_exchange_rate',
-          description: 'Convert currency',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              from: { type: 'string' },
-              to: { type: 'string' },
-              amount: { type: 'number', default: 1 }
-            },
-            required: ['from', 'to']
-          }
-        },
-        {
-          name: 'calculate_trip_budget',
-          description: 'Calculate trip budget',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              destinations: { type: 'array', items: { type: 'string' } },
-              duration: { type: 'number' },
-              travelers: { type: 'number', default: 1 },
-              budgetLevel: { type: 'string', enum: ['budget', 'mid-range', 'luxury'] }
-            },
-            required: ['destinations', 'duration', 'budgetLevel']
-          }
-        },
-        {
-          name: 'search_places',
-          description: 'Search for attractions/restaurants',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              location: { type: 'string' },
-              category: { type: 'string', enum: ['tourist_attractions', 'restaurants', 'hotels'] },
-              radius: { type: 'number', default: 5000 }
-            },
-            required: ['location']
-          }
-        }
       ]
     };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
-    console.error(`🛠️ Executing: ${name}`);
-
+    const name = request.params.name;
+    const args = request.params.arguments;
+    console.error(`🛠️ EXECUTING TOOL: ${name}`);
+    
     try {
-      let result;
+      if (name === 'search_flights') return { content: [{ type: 'text', text: JSON.stringify(await flightService.searchFlights(args)) }] };
+      if (name === 'get_weather_forecast') return { content: [{ type: 'text', text: JSON.stringify(await weatherService.getWeatherForecast(args)) }] };
+      if (name === 'calculate_trip_budget') return { content: [{ type: 'text', text: JSON.stringify(await calculateBudget(args)) }] };
+      if (name === 'search_places') return { content: [{ type: 'text', text: JSON.stringify(await placesService.searchPlaces(args.location, args.category, args.radius)) }] };
       
-      if (name === 'search_flights') result = await flightService.searchFlights(args);
-      else if (name === 'search_hotels') result = await accommodationService.searchAccommodation(args);
-      else if (name === 'get_weather_forecast') result = await weatherService.getWeatherForecast(args);
-      else if (name === 'get_exchange_rate') result = await currencyService.getExchangeRate(args);
-      else if (name === 'calculate_trip_budget') result = await calculateBudget(args);
-      else if (name === 'search_places') result = await placesService.searchPlaces(args.location, args.category, args.radius);
-      else throw new Error(`Unknown tool: ${name}`);
+      // NEW HANDLERS ADDED HERE
+      if (name === 'search_hotels') return { content: [{ type: 'text', text: JSON.stringify(await accommodationService.searchAccommodation(args)) }] };
+      if (name === 'get_exchange_rate') return { content: [{ type: 'text', text: JSON.stringify(await currencyService.getExchangeRate(args)) }] };
 
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      return { content: [{ type: 'text', text: "Tool executed" }] }; 
     } catch (error) {
-      console.error(`❌ Error:`, error);
-      return { content: [{ type: 'text', text: `Error: ${error.message}` }] };
+      return { content: [{ type: 'text', text: `Error: ${error}` }] };
     }
   });
 
-  return server;
-}
+  await server.connect(transport);
 
-app.get('/', (req, res) => {
-  res.json({ status: 'ok', name: 'Travel MCP Server', version: '1.0.0' });
-});
-
-app.get('/health', (req, res) => {
-  res.json({ status: 'healthy', timestamp: new Date().toISOString() });
-});
-
-app.get('/sse', async (req, res) => {
-  console.error('🔗 New SSE connection');
-  
-  const server = createMCPServer();
-  const transport = new SSEServerTransport('/sse', res);
-  
-  try {
-    await server.connect(transport);
-    console.error('✅ Connected');
-  } catch (error) {
-    console.error('❌ Connection error:', error);
+  const sessionId = transport.sessionId;
+  if (sessionId) {
+      sessions.set(sessionId, transport);
+      console.error(`✅ Session Started: ${sessionId}`);
   }
-  
+
+  const keepAlive = setInterval(() => {
+    if (res.writable) res.write(':\n\n');
+  }, 10000);
+
   req.on('close', () => {
-    console.error('⚠️ Disconnected');
-    server.close();
+     console.error('⚠️ Connection Closed');
+     if (sessionId) sessions.delete(sessionId);
+     clearInterval(keepAlive);
+     server.close();
   });
 });
 
-// Also handle POST to /sse for messages
-app.post('/sse', (req, res) => {
-  console.error('📨 POST to /sse - returning 202');
-  res.status(202).json({ status: 'accepted' });
-});
+// --- MESSAGE HANDLER ---
+const handleMessage = async (req, res) => {
+  const sessionId = req.query.sessionId;
+  
+  if (!sessionId || !sessions.has(sessionId)) {
+     console.error(`❌ Msg received for unknown session: ${sessionId}`);
+     res.status(404).send('Session not found');
+     return;
+  }
 
+  const transport = sessions.get(sessionId);
+  try {
+      await transport.handlePostMessage(req, res);
+      console.error('✅ Message handled');
+  } catch (err) {
+      console.error('⚠️ Message handling error:', err);
+  }
+};
+
+app.post('/message', handleMessage);
+app.post('/sse', handleMessage);
+
+// --- REAL BUDGET CALCULATOR ---
 async function calculateBudget(params) {
-  const { budgetLevel = 'mid-range', duration = 7, travelers = 1 } = params;
-  const m = {
-    budget: { daily: 50, accommodation: 60, flight: 300 },
-    'mid-range': { daily: 100, accommodation: 120, flight: 500 },
-    luxury: { daily: 250, accommodation: 300, flight: 1200 }
-  }[budgetLevel];
-  
-  const flights = m.flight * travelers * 2;
-  const accommodation = m.accommodation * duration;
-  const daily = m.daily * duration * travelers;
-  
-  return {
-    totalBudget: flights + accommodation + daily,
-    breakdown: { flights, accommodation, dailyExpenses: daily },
-    currency: 'USD',
-    budgetLevel,
-    duration,
-    travelers
-  };
+    console.error("💰 Calculating budget for:", params);
+
+    const duration = params.duration || 5;
+    const travelers = params.travelers || 1;
+    const budgetLevel = params.budgetLevel || 'mid-range';
+    
+    // Estimated costs per level (USD)
+    const rates = {
+        'budget':    { daily: 50,  hotel: 80,  flight: 400 },
+        'mid-range': { daily: 150, hotel: 180, flight: 900 },
+        'luxury':    { daily: 500, hotel: 500, flight: 2500 }
+    };
+    
+    const rate = rates[budgetLevel] || rates['mid-range'];
+    
+    const flightTotal = rate.flight * travelers;
+    const hotelTotal = rate.hotel * duration; 
+    const dailyTotal = rate.daily * duration * travelers;
+    const total = flightTotal + hotelTotal + dailyTotal;
+
+    return {
+        currency: 'USD',
+        total_budget: total,
+        breakdown: {
+            flights_estimate: flightTotal,
+            accommodation_estimate: hotelTotal,
+            daily_expenses_estimate: dailyTotal,
+            summary: `Estimated ${budgetLevel} trip for ${travelers} people for ${duration} days.`
+        }
+    };
 }
 
-const PORT = process.env.PORT || 3000;
+const PORT = 3000;
 app.listen(PORT, () => {
-  console.error('🎉 Travel MCP Server running on port', PORT);
+  console.error(`✅ Travel MCP Server (JS Mode - Full Tools) listening on port ${PORT}`);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('💥 UNCAUGHT EXCEPTION:', err);
 });
