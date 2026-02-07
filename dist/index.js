@@ -30,6 +30,7 @@ const accommodationService = new AccommodationService();
 const currencyService = new CurrencyService();
 const weatherService = new WeatherService();
 const placesService = new PlacesService();
+const transports = {};
 
 const sessions = new Map();
 
@@ -189,9 +190,7 @@ app.get('/sse', async (req, res) => {
   });
 });
 
-// --- MESSAGE HANDLER ---
-const handleMessage = async (req, res) => {
-  const sessionId = req.query.sessionId;
+
   
   if (!sessionId || !sessions.has(sessionId)) {
      console.error(`❌ Msg received for unknown session: ${sessionId}`);
@@ -201,15 +200,11 @@ const handleMessage = async (req, res) => {
 
   const transport = sessions.get(sessionId);
   try {
-      await transport.handlePostMessage(req, res);
-      console.error('✅ Message handled');
-  } catch (err) {
-      console.error('⚠️ Message handling error:', err);
+
   }
 };
 
-app.post('/message', handleMessage);
-app.post('/sse', handleMessage);
+
 
 // --- REAL BUDGET CALCULATOR ---
 async function calculateBudget(params) {
@@ -247,9 +242,5 @@ async function calculateBudget(params) {
 
 const PORT = 3000;
 app.listen(PORT, () => {
-  console.error(`✅ Travel MCP Server (JS Mode - Full Tools) listening on port ${PORT}`);
-});
 
-process.on('uncaughtException', (err) => {
-  console.error('💥 UNCAUGHT EXCEPTION:', err);
 });
