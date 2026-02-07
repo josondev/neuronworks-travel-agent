@@ -2,7 +2,7 @@ import axios from 'axios';
 
 export class AccommodationService {
     constructor() {
-        this.apiKey = process.env.GEOAPIFY_KEY || '';
+        this.apiKey = process.env.GEOAPIFY_API_KEY || '';
         this.baseUrl = 'https://api.geoapify.com/v2/places';
         this.geocodeUrl = 'https://api.geoapify.com/v1/geocode/search';
     }
