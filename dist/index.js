@@ -30,6 +30,7 @@ const accommodationService = new AccommodationService();
 const currencyService = new CurrencyService();
 const weatherService = new WeatherService();
 const placesService = new PlacesService();
+const transports = {};
 
 // Create a single shared MCP server instance
 function createMCPServer() {
@@ -166,13 +167,21 @@ app.get('/sse', async (req, res) => {
   console.error('🔗 New SSE connection');
   
   const server = createMCPServer();
-  const transport = new SSEServerTransport('/sse', res);
+  const transport = new SSEServerTransport('/messages', res);
+  const sessionId = transport.sessionId;
+  transports[sessionId] = transport;
+  transport.onclose = () => {
+    delete transports[sessionId];
+  };
   
   try {
     await server.connect(transport);
     console.error('✅ Connected');
   } catch (error) {
     console.error('❌ Connection error:', error);
+    if (!res.headersSent) {
+      res.status(500).send('Error establishing SSE stream');
+    }
   }
   
   req.on('close', () => {
@@ -181,10 +190,27 @@ app.get('/sse', async (req, res) => {
   });
 });
 
-// Also handle POST to /sse for messages
-app.post('/sse', (req, res) => {
-  console.error('📨 POST to /sse - returning 202');
-  res.status(202).json({ status: 'accepted' });
+// Handle POST to /messages for client requests
+app.post('/messages', async (req, res) => {
+  console.error('📨 POST to /messages');
+  const sessionId = req.query.sessionId;
+  if (!sessionId || Array.isArray(sessionId)) {
+    res.status(400).send('Missing sessionId parameter');
+    return;
+  }
+  const transport = transports[sessionId];
+  if (!transport) {
+    res.status(404).send('Session not found');
+    return;
+  }
+  try {
+    await transport.handlePostMessage(req, res, req.body);
+  } catch (error) {
+    console.error('❌ Error handling request:', error);
+    if (!res.headersSent) {
+      res.status(500).send('Error handling request');
+    }
+  }
 });
 
 async function calculateBudget(params) {
