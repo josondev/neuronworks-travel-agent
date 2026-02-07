@@ -21,13 +21,10 @@ import { PlacesService } from './services/PlacesService.js';
 
 const app = express();
 
-// FIX 1: Allow CORS
+// Allow CORS
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'] }));
 
-// FIX 2: REMOVE express.json()! 
-// It was consuming the stream before the SDK could read it.
-// app.use(express.json()); <--- DELETED THIS LINE
-
+// Instantiate Services
 const flightService = new FlightService();
 const accommodationService = new AccommodationService();
 const currencyService = new CurrencyService();
@@ -37,14 +34,13 @@ const placesService = new PlacesService();
 const sessions = new Map();
 
 app.get('/', (req, res) => {
-  res.status(200).send('Travel MCP Server is Running (Stream Fix Applied)');
+  res.status(200).send('Travel MCP Server is Running');
 });
 
 // --- SSE ENDPOINT ---
 app.get('/sse', async (req, res) => {
   console.error('🔗 NEW CONNECTION: Client connected via SSE');
 
-  // Manual Headers
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache, no-transform',
@@ -53,10 +49,7 @@ app.get('/sse', async (req, res) => {
     'Access-Control-Allow-Origin': '*' 
   });
 
-  // Monkey Patch
   res.writeHead = () => { return res; };
-
-  // Buffer Buster
   res.write(':' + ' '.repeat(4096) + '\n\n');
 
   const transport = new SSEServerTransport('/message', res);
@@ -70,6 +63,7 @@ app.get('/sse', async (req, res) => {
     console.error('📋 Client requested Tool List');
     return {
       tools: [
+        // 1. FLIGHTS
         {
           name: 'search_flights',
           description: 'Search for flight prices',
@@ -85,6 +79,7 @@ app.get('/sse', async (req, res) => {
             required: ['origin', 'destination', 'departDate']
           }
         },
+        // 2. WEATHER
         {
             name: 'get_weather_forecast',
             description: 'Get weather forecast',
@@ -94,6 +89,7 @@ app.get('/sse', async (req, res) => {
                 required: ['city', 'country', 'startDate', 'endDate']
             }
         },
+        // 3. BUDGET (Now using real logic)
         {
             name: 'calculate_trip_budget',
             description: 'Calculate trip budget',
@@ -108,6 +104,7 @@ app.get('/sse', async (req, res) => {
               required: ['destinations', 'duration', 'budgetLevel']
             }
           },
+          // 4. PLACES (Attractions/Restaurants)
           {
             name: 'search_places',
             description: 'Search for tourist attractions or restaurants',
@@ -119,6 +116,32 @@ app.get('/sse', async (req, res) => {
                 radius: { type: 'number', default: 5000 }
               },
               required: ['location']
+            }
+          },
+          // 5. ACCOMMODATION (This was missing!)
+          {
+            name: 'search_hotels',
+            description: 'Search for hotels in a city',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                city: { type: 'string' }
+              },
+              required: ['city']
+            }
+          },
+          // 6. CURRENCY (This was missing!)
+          {
+            name: 'get_exchange_rate',
+            description: 'Convert currency',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                from: { type: 'string' },
+                to: { type: 'string' },
+                amount: { type: 'number', default: 1 }
+              },
+              required: ['from', 'to']
             }
           }
       ]
@@ -136,6 +159,10 @@ app.get('/sse', async (req, res) => {
       if (name === 'calculate_trip_budget') return { content: [{ type: 'text', text: JSON.stringify(await calculateBudget(args)) }] };
       if (name === 'search_places') return { content: [{ type: 'text', text: JSON.stringify(await placesService.searchPlaces(args.location, args.category, args.radius)) }] };
       
+      // NEW HANDLERS ADDED HERE
+      if (name === 'search_hotels') return { content: [{ type: 'text', text: JSON.stringify(await accommodationService.searchAccommodation(args)) }] };
+      if (name === 'get_exchange_rate') return { content: [{ type: 'text', text: JSON.stringify(await currencyService.getExchangeRate(args)) }] };
+
       return { content: [{ type: 'text', text: "Tool executed" }] }; 
     } catch (error) {
       return { content: [{ type: 'text', text: `Error: ${error}` }] };
@@ -174,7 +201,6 @@ const handleMessage = async (req, res) => {
 
   const transport = sessions.get(sessionId);
   try {
-      // The SDK reads the stream here. If express.json() ran before this, it fails.
       await transport.handlePostMessage(req, res);
       console.error('✅ Message handled');
   } catch (err) {
@@ -185,13 +211,43 @@ const handleMessage = async (req, res) => {
 app.post('/message', handleMessage);
 app.post('/sse', handleMessage);
 
+// --- REAL BUDGET CALCULATOR ---
 async function calculateBudget(params) {
-    return { totalBudget: 5000, currency: 'USD' };
+    console.error("💰 Calculating budget for:", params);
+
+    const duration = params.duration || 5;
+    const travelers = params.travelers || 1;
+    const budgetLevel = params.budgetLevel || 'mid-range';
+    
+    // Estimated costs per level (USD)
+    const rates = {
+        'budget':    { daily: 50,  hotel: 80,  flight: 400 },
+        'mid-range': { daily: 150, hotel: 180, flight: 900 },
+        'luxury':    { daily: 500, hotel: 500, flight: 2500 }
+    };
+    
+    const rate = rates[budgetLevel] || rates['mid-range'];
+    
+    const flightTotal = rate.flight * travelers;
+    const hotelTotal = rate.hotel * duration; 
+    const dailyTotal = rate.daily * duration * travelers;
+    const total = flightTotal + hotelTotal + dailyTotal;
+
+    return {
+        currency: 'USD',
+        total_budget: total,
+        breakdown: {
+            flights_estimate: flightTotal,
+            accommodation_estimate: hotelTotal,
+            daily_expenses_estimate: dailyTotal,
+            summary: `Estimated ${budgetLevel} trip for ${travelers} people for ${duration} days.`
+        }
+    };
 }
 
 const PORT = 3000;
 app.listen(PORT, () => {
-  console.error(`✅ Travel MCP Server (JS Mode) listening on port ${PORT}`);
+  console.error(`✅ Travel MCP Server (JS Mode - Full Tools) listening on port ${PORT}`);
 });
 
 process.on('uncaughtException', (err) => {
