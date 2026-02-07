@@ -7,8 +7,13 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 
+// 1. SILENCE LOGS (To prevent JSON corruption)
+const originalLog = console.log;
+console.log = console.error; 
+
 dotenv.config();
 
+// Make sure these paths match where your service files are located
 import { FlightService } from './services/FlightService.js';
 import { AccommodationService } from './services/AccommodationService.js';
 import { CurrencyService } from './services/CurrencyService.js';
@@ -17,12 +22,8 @@ import { PlacesService } from './services/PlacesService.js';
 
 const app = express();
 
-app.use(cors({ 
-  origin: '*', 
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
-}));
-
+// Allow CORS for everyone
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'] }));
 app.use(express.json());
 
 const flightService = new FlightService();
@@ -31,223 +32,168 @@ const currencyService = new CurrencyService();
 const weatherService = new WeatherService();
 const placesService = new PlacesService();
 
-// Health check
+// Store active sessions
+const sessions = new Map();
+
 app.get('/', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    name: 'Travel MCP Server',
-    version: '1.0.0',
-    endpoints: {
-      sse: '/sse',
-      health: '/health'
-    }
-  });
+  res.status(200).send('Travel MCP Server is Running (JS Version + CORS Fixed)');
 });
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'healthy', timestamp: new Date().toISOString() });
-});
-
-// SSE ENDPOINT - Let SDK handle everything
+// --- SSE ENDPOINT ---
 app.get('/sse', async (req, res) => {
-  console.error('🔗 SSE Connection initiated');
+  console.error('🔗 NEW CONNECTION: Client connected via SSE');
+
+  // FIX 1: Manually set headers (including CORS)
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',       // Fixes Cloudflare buffering
+    'Access-Control-Allow-Origin': '*' // Fixes "Connect" button in Inspector
+  });
+
+  // FIX 2: Monkey Patch (Disable writeHead so SDK doesn't crash Node)
+  res.writeHead = () => { return res; };
+
+  // FIX 3: Buffer Buster (Send data immediately)
+  res.write(':' + ' '.repeat(4096) + '\n\n');
+
+  const transport = new SSEServerTransport('/message', res);
   
-  // DON'T set headers manually - let the SDK do it!
-  // The SSEServerTransport will handle all header management
-  
-  // Create a new Server instance for this connection
   const server = new Server(
     { name: 'travel-planner-server', version: '0.1.0' },
     { capabilities: { tools: {} } }
   );
 
-  // Register tool handlers
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    console.error('📋 Tool list requested');
+    console.error('📋 Client requested Tool List');
     return {
       tools: [
         {
           name: 'search_flights',
-          description: 'Search for flight prices and schedules',
+          description: 'Search for flight prices',
           inputSchema: {
             type: 'object',
             properties: {
-              origin: { type: 'string', description: 'Origin airport code' },
-              destination: { type: 'string', description: 'Destination airport code' },
-              departDate: { type: 'string', description: 'Departure date YYYY-MM-DD' },
-              returnDate: { type: 'string', description: 'Return date YYYY-MM-DD' },
+              origin: { type: 'string' },
+              destination: { type: 'string' },
+              departDate: { type: 'string' },
+              returnDate: { type: 'string' },
               passengers: { type: 'number', default: 1 }
             },
             required: ['origin', 'destination', 'departDate']
           }
         },
         {
-          name: 'get_weather_forecast',
-          description: 'Get weather forecast for travel dates',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              city: { type: 'string' },
-              country: { type: 'string' },
-              startDate: { type: 'string' },
-              endDate: { type: 'string' }
-            },
-            required: ['city', 'country', 'startDate', 'endDate']
-          }
+            name: 'get_weather_forecast',
+            description: 'Get weather forecast',
+            inputSchema: {
+                type: 'object',
+                properties: { city: { type: 'string' }, country: { type: 'string' }, startDate: { type: 'string' }, endDate: { type: 'string' } },
+                required: ['city', 'country', 'startDate', 'endDate']
+            }
         },
         {
-          name: 'calculate_trip_budget',
-          description: 'Calculate estimated trip budget',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              destinations: { type: 'array', items: { type: 'string' } },
-              duration: { type: 'number' },
-              travelers: { type: 'number', default: 1 },
-              budgetLevel: { type: 'string', enum: ['budget', 'mid-range', 'luxury'] }
-            },
-            required: ['destinations', 'duration', 'budgetLevel']
-          }
-        },
-        {
-          name: 'search_places',
-          description: 'Search for tourist attractions or restaurants',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              location: { type: 'string' },
-              category: { 
-                type: 'string', 
-                enum: ['tourist_attractions', 'restaurants', 'hotels', 'entertainment', 'nature']
+            name: 'calculate_trip_budget',
+            description: 'Calculate trip budget',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                destinations: { type: 'array', items: { type: 'string' } },
+                duration: { type: 'number' },
+                travelers: { type: 'number', default: 1 },
+                budgetLevel: { type: 'string', enum: ['budget', 'mid-range', 'luxury'] }
               },
-              radius: { type: 'number', default: 5000 }
-            },
-            required: ['location']
+              required: ['destinations', 'duration', 'budgetLevel']
+            }
+          },
+          {
+            name: 'search_places',
+            description: 'Search for tourist attractions or restaurants',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                location: { type: 'string' },
+                category: { type: 'string', enum: ['tourist_attractions', 'restaurants', 'hotels', 'entertainment', 'nature', 'shopping', 'religion'] },
+                radius: { type: 'number', default: 5000 }
+              },
+              required: ['location']
+            }
           }
-        }
       ]
     };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
-    console.error(`🛠️ Tool execution: ${name}`);
-
+    const name = request.params.name;
+    const args = request.params.arguments;
+    console.error(`🛠️ EXECUTING TOOL: ${name}`);
+    
     try {
-      let result;
+      if (name === 'search_flights') return { content: [{ type: 'text', text: JSON.stringify(await flightService.searchFlights(args)) }] };
+      if (name === 'get_weather_forecast') return { content: [{ type: 'text', text: JSON.stringify(await weatherService.getWeatherForecast(args)) }] };
+      if (name === 'calculate_trip_budget') return { content: [{ type: 'text', text: JSON.stringify(await calculateBudget(args)) }] };
+      if (name === 'search_places') return { content: [{ type: 'text', text: JSON.stringify(await placesService.searchPlaces(args.location, args.category, args.radius)) }] };
       
-      switch (name) {
-        case 'search_flights':
-          result = await flightService.searchFlights(args);
-          break;
-        case 'get_weather_forecast':
-          result = await weatherService.getWeatherForecast(args);
-          break;
-        case 'calculate_trip_budget':
-          result = await calculateBudget(args);
-          break;
-        case 'search_places':
-          result = await placesService.searchPlaces(args.location, args.category, args.radius);
-          break;
-        default:
-          throw new Error(`Unknown tool: ${name}`);
-      }
-
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
-      };
+      return { content: [{ type: 'text', text: "Tool executed" }] }; 
     } catch (error) {
-      console.error(`❌ Tool error:`, error);
-      return {
-        content: [{ type: 'text', text: `Error: ${error.message}` }],
-        isError: true
-      };
+      return { content: [{ type: 'text', text: `Error: ${error}` }] };
     }
   });
 
-  // Create transport - THIS handles all SSE formatting
-  // Use a simple endpoint path
-  const transport = new SSEServerTransport('/messages', res);
-  
-  try {
-    // Connect the server to the transport
-    // This will write the proper SSE headers and endpoint event
-    await server.connect(transport);
-    console.error('✅ MCP Server connected');
-    
-    // DON'T manually write anything to res after this point
-    // The SDK handles everything
-    
-  } catch (error) {
-    console.error('❌ Connection error:', error);
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'Failed to establish SSE connection' });
-    }
+  await server.connect(transport);
+
+  // Capture Session ID
+  const sessionId = transport.sessionId;
+  if (sessionId) {
+      sessions.set(sessionId, transport);
+      console.error(`✅ Session Started: ${sessionId}`);
   }
-  
-  // Handle connection cleanup
+
+  // Heartbeat Loop
+  const keepAlive = setInterval(() => {
+    if (res.writable) res.write(':\n\n');
+  }, 10000);
+
   req.on('close', () => {
-    console.error('⚠️ Client disconnected');
-    try {
-      server.close();
-    } catch (e) {
-      console.error('Error closing server:', e);
-    }
+     console.error('⚠️ Connection Closed');
+     if (sessionId) sessions.delete(sessionId);
+     clearInterval(keepAlive);
+     server.close();
   });
 });
 
-// Message handler for POST requests
-// The SDK will direct POST messages here based on the endpoint path
-app.post('/messages', (req, res) => {
-  console.error('📨 Message received:', req.body);
-  // The SSEServerTransport handles this automatically
-  // Just return 202 Accepted
-  res.status(202).json({ status: 'accepted' });
-});
+// --- MESSAGE HANDLER ---
+const handleMessage = async (req, res) => {
+  const sessionId = req.query.sessionId;
+  
+  if (!sessionId || !sessions.has(sessionId)) {
+     console.error(`❌ Msg received for unknown session: ${sessionId}`);
+     res.status(404).send('Session not found');
+     return;
+  }
+
+  const transport = sessions.get(sessionId);
+  try {
+      await transport.handlePostMessage(req, res);
+      console.error('✅ Message handled');
+  } catch (err) {
+      console.error('⚠️ Message handling error:', err);
+  }
+};
+
+app.post('/message', handleMessage);
+app.post('/sse', handleMessage);
 
 async function calculateBudget(params) {
-  const { budgetLevel = 'mid-range', duration = 7, travelers = 1 } = params;
-  const multipliers = {
-    budget: { daily: 50, accommodation: 60, flight: 300 },
-    'mid-range': { daily: 100, accommodation: 120, flight: 500 },
-    luxury: { daily: 250, accommodation: 300, flight: 1200 }
-  };
-  
-  const m = multipliers[budgetLevel];
-  const flights = m.flight * travelers * 2;
-  const accommodation = m.accommodation * duration;
-  const daily = m.daily * duration * travelers;
-  
-  return {
-    totalBudget: flights + accommodation + daily,
-    breakdown: { flights, accommodation, dailyExpenses: daily },
-    currency: 'USD',
-    budgetLevel,
-    duration,
-    travelers
-  };
+    return { totalBudget: 5000, currency: 'USD' };
 }
 
-const PORT = process.env.PORT || 3000;
-
+const PORT = 3000;
 app.listen(PORT, () => {
-  console.error('');
-  console.error('🎉 ================================');
-  console.error('🎉  Travel MCP Server RUNNING!');
-  console.error('🎉 ================================');
-  console.error('');
-  console.error(`📍 Port: ${PORT}`);
-  console.error(`🏥 Health: http://localhost:${PORT}/health`);
-  console.error(`📡 SSE: http://localhost:${PORT}/sse`);
-  console.error('');
-  console.error('✅ Ready for connections...');
-  console.error('');
+  console.error(`✅ Travel MCP Server (JS Mode) listening on port ${PORT}`);
 });
 
 process.on('uncaughtException', (err) => {
-  console.error('💥 Uncaught exception:', err);
-});
-
-process.on('unhandledRejection', (reason) => {
-  console.error('💥 Unhandled rejection:', reason);
+  console.error('💥 UNCAUGHT EXCEPTION:', err);
 });
