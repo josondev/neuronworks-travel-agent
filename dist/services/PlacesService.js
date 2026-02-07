@@ -1,4 +1,7 @@
 import axios from 'axios';
+import dotenv from 'dotenv';
+
+dotenv.config();
 export class PlacesService {
     apiKey;
     // Geoapify separates Geocoding and Places into different endpoints
