@@ -130,7 +130,7 @@ async def run_agent(query, chat_container):
             status_text.info(f"🛠️ Found {len(langchain_tools)} tools. Thinking...")
 
             # 3. Initialize LLM
-            llm = ChatGroq(model="groq/compound") 
+            llm = ChatGroq(model="openai/gpt-oss-20b") 
             llm_with_tools = llm.bind_tools(langchain_tools)
             
             # 4. Construct Message History with System Prompt
