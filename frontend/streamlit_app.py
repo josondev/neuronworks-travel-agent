@@ -4,6 +4,7 @@ import os
 import nest_asyncio
 from contextlib import AsyncExitStack
 from pydantic import create_model, Field
+from datetime import datetime 
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
@@ -50,8 +51,14 @@ def create_pydantic_model_from_schema(name, schema):
 
 # --- SYSTEM PROMPT (The Anti-Hallucination Guard) ---
 # --- SYSTEM PROMPT (Strictly aligned with your Service Code) ---
-SYSTEM_PROMPT = """
-You are an expert, factual Travel Agent. Your job is to plan trips using ONLY the real-time data provided by your tools.
+# --- GET CURRENT DATE ---
+current_date = datetime.now().strftime("%Y-%m-%d") # e.g., "2026-02-08"
+
+# --- SYSTEM PROMPT (Dynamic Date Injection) ---
+SYSTEM_PROMPT = f"""
+You are an expert, factual Travel Agent. 
+### 📅 CURRENT DATE: {current_date}
+When the user asks for "next Monday" or "next week", calculate the date relative to **{current_date}**.
 
 ### 🔴 CRITICAL RULES (ZERO HALLUCINATION):
 1. **NO INVENTED DATA:** If a tool returns no data (empty list `[]`, `null`, or error), you MUST state: "I could not find live data for this request."
@@ -67,7 +74,7 @@ You are an expert, factual Travel Agent. Your job is to plan trips using ONLY th
   - "Madurai" -> `IXM`
   - "Chennai" -> `MAA`
   - **NEVER** send full city names like "Madurai" to `origin` or `destination`.
-- **DATES:** Format MUST be `YYYY-MM-DD`.
+- **DATES:** Format MUST be `YYYY-MM-DD`. Ensure you are using the correct year ({current_date.split('-')[0]}).
 
 #### 2. 🏨 HOTELS (`Google Hotels`)
 - **INPUT:** Use the full city name (e.g., "Paris", "Madurai").
