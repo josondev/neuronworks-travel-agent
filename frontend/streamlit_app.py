@@ -137,7 +137,7 @@ async def run_agent(query, chat_container):
             status_text.info(f"🛠️ Found {len(langchain_tools)} tools. Thinking...")
 
             # 3. Initialize LLM
-            llm = ChatGroq(model="meta-llama/llama-4-maverick-17b-128e-instruct") 
+            llm = ChatGroq(model="llama-3.3-70b-versatile") 
             llm_with_tools = llm.bind_tools(langchain_tools)
             
             # 4. Construct Message History with System Prompt
