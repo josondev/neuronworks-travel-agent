@@ -8,10 +8,10 @@ from pydantic import create_model, Field
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage, SystemMessage
 from langchain_core.tools import StructuredTool
 
-# 1. Apply Async Patch (Crucial for Streamlit)
+# 1. Apply Async Patch
 nest_asyncio.apply()
 
 # 2. Page Config
@@ -24,7 +24,6 @@ with st.sidebar:
     st.header("Configuration")
     server_url = st.text_input("MCP Server URL", value="https://neuronworks-travel-agent.onrender.com/sse")
     
-    # Get API Key from secrets or user input
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         api_key = st.text_input("Groq API Key", type="password")
@@ -49,10 +48,27 @@ def create_pydantic_model_from_schema(name, schema):
             fields[field_name] = (field_type, Field(description=field_info.get("description", "")))
     return create_model(f"{name}Input", **fields)
 
-# --- CORE LOGIC: The Agent Workflow ---
+# --- SYSTEM PROMPT (The Anti-Hallucination Guard) ---
+SYSTEM_PROMPT = """
+You are an expert, factual Travel Agent. Your job is to plan trips using ONLY the real-time data provided by your tools.
+
+### 🔴 CRITICAL RULES (DO NOT BREAK):
+1. **NO INVENTED PRICES:** If a tool returns no data (e.g., "No flights found" or empty list `[]`), you MUST state: "I could not find live data for this request." Do NOT make up a price like "$400 estimated".
+2. **NO FAKE HOTELS:** Only recommend hotels returned by the `Google Hotels` tool. Do not hallucinate "Hotel Paris Luxury" if the tool didn't see it.
+3. **HONESTY FIRST:** If the API fails or returns an error, tell the user the API failed. Do not cover it up with fake data.
+4. **CURRENCY:** Always output prices in the currency returned by the tool (usually USD, EUR, or INR).
+
+### 🛠️ HOW TO USE TOOLS:
+- Always call `search_flights` first to check transport feasibility.
+- Then call `Google Hotels` for accommodation.
+- Use `calculate_trip_budget` only AFTER you have real data from the other tools.
+
+If you cannot find flights or hotels for the specific dates, suggest changing the dates instead of inventing a flight.
+"""
+
+# --- CORE LOGIC ---
 async def run_agent(query, chat_container):
     async with AsyncExitStack() as stack:
-        # Status Update
         status_text = chat_container.empty()
         status_text.info("🔌 Connecting to Server...")
 
@@ -83,12 +99,16 @@ async def run_agent(query, chat_container):
             status_text.info(f"🛠️ Found {len(langchain_tools)} tools. Thinking...")
 
             # 3. Initialize LLM
-            llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0.1)
+            llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0.1) # Low temp = Less creativity/hallucination
             llm_with_tools = llm.bind_tools(langchain_tools)
             
-            messages = [HumanMessage(content=query)]
+            # 4. Construct Message History with System Prompt
+            messages = [
+                SystemMessage(content=SYSTEM_PROMPT),
+                HumanMessage(content=query)
+            ]
 
-            # 4. Agent Loop
+            # 5. Agent Loop
             ai_msg = await llm_with_tools.ainvoke(messages)
             messages.append(ai_msg)
 
@@ -103,9 +123,14 @@ async def run_agent(query, chat_container):
                             st.write(f"🛠️ **Executing:** `{tool_call['name']}`")
                             st.json(tool_call['args'])
                         
+                        # EXECUTE
                         tool_result = await selected_tool.coroutine(**tool_call['args'])
                         content_text = tool_result.content[0].text
                         
+                        # --- DEBUG: CHECK FOR EMPTY DATA ---
+                        if content_text == "[]" or content_text == "{}" or "error" in content_text.lower():
+                             st.warning(f"⚠️ Tool {tool_call['name']} returned no data. Expect limited results.")
+
                         tool_msg = ToolMessage(
                             tool_call_id=tool_call['id'],
                             content=content_text,
@@ -113,10 +138,10 @@ async def run_agent(query, chat_container):
                         )
                         messages.append(tool_msg)
             
-            # 5. Final Answer
+            # 6. Final Answer
             status_text.info("📝 Generating final itinerary...")
             final_response = await llm_with_tools.ainvoke(messages)
-            status_text.empty() # Clear status
+            status_text.empty() 
             return final_response.content
 
         except Exception as e:
@@ -125,21 +150,19 @@ async def run_agent(query, chat_container):
 
 # --- UI: Chat Interface ---
 if "messages" not in st.session_state:
-    st.session_state.messages = []
+    st.session_state.messages = [{"role": "system", "content": "I am your AI Travel Agent. Where would you like to go?"}]
 
-# Display History
 for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+    if message["role"] != "system": # Don't show system prompt in chat
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
 
-# Handle Input
 if prompt := st.chat_input("Where do you want to go?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        # Run the async agent loop
         response = asyncio.run(run_agent(prompt, st.empty()))
         
         if response:
