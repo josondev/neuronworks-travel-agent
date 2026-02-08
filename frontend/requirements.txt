@@ -1,0 +1,10 @@
+streamlit
+asyncio
+nest_asyncio
+langchain
+langchain-groq
+langchain-core
+mcp
+pydantic
+httpx
+sse-starlette
