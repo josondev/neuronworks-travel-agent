@@ -12,6 +12,59 @@ from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage, ToolMessage, SystemMessage
 from langchain_core.tools import StructuredTool
 
+st.markdown("""
+<style>
+  /* App background */
+  .stApp {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  }
+
+  section.main > div {
+    max-width: 100%;
+    padding: 1rem;
+  }
+
+  /* Base chat message box styling (common) */
+  div[data-testid="stChatMessage"]{
+    border-radius: 10px;
+    padding: 1rem;
+    margin: 0.5rem 0;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.12);
+  }
+
+  /* DARK MODE */
+  @media (prefers-color-scheme: dark) {
+    div[data-testid="stChatMessage"]{
+      background: #0b0b0b !important;
+    }
+
+    /* Target the actual rendered text inside chat messages */
+    div[data-testid="stChatMessageContent"],
+    div[data-testid="stChatMessageContent"] p,
+    div[data-testid="stChatMessageContent"] li,
+    div[data-testid="stChatMessageContent"] span,
+    div[data-testid="stChatMessageContent"] div{
+      color: #f7fafc !important;
+    }
+  }
+
+  /* LIGHT MODE */
+  @media (prefers-color-scheme: light) {
+    div[data-testid="stChatMessage"]{
+      background: #ffffff !important;
+    }
+
+    div[data-testid="stChatMessageContent"],
+    div[data-testid="stChatMessageContent"] p,
+    div[data-testid="stChatMessageContent"] li,
+    div[data-testid="stChatMessageContent"] span,
+    div[data-testid="stChatMessageContent"] div{
+      color: #111827 !important;
+    }
+  }
+</style>
+""", unsafe_allow_html=True)
+
 # 1. Apply Async Patch
 nest_asyncio.apply()
 
