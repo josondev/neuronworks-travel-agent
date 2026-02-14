@@ -71,7 +71,7 @@ nest_asyncio.apply()
 # 2. Page Config
 st.set_page_config(page_title="AI Travel Agent", page_icon="✈️")
 st.title("✈️ AI Travel Agent")
-st.caption("Powered by NeuralWorks & MCP")
+st.caption("Powered by Neuronworks.ai & MCP")
 
 # 3. Sidebar Configuration
 with st.sidebar:
