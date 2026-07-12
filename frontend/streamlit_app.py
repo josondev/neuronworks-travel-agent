@@ -171,6 +171,47 @@ You are an expert, factual AI Travel Agent. Your goal is to plan realistic, book
 4. **Disclaimer:** "Prices and availability are subject to change."
 """
 
+# --- SEMANTIC GATE (replaces keyword matching) ---
+# A single fast, cheap model call that decides whether this turn needs new
+# tool data or can be answered from what's already been fetched. Uses
+# openai/gpt-oss-20b on Groq: ~1000 tok/s and priced for exactly this kind
+# of high-frequency, low-output classification (single-word answer, so the
+# added latency is small — typically well under the latency of even one
+# real tool call, let alone four).
+CLASSIFIER_MODEL = "openai/gpt-oss-20b"
+
+async def needs_fresh_tool_data(latest_user_msg: str, trip_data: dict, last_assistant_msg: str) -> bool:
+    """Returns True if this turn should have tools available, False if it
+    can be answered purely by re-reasoning over trip_data. Fails open (True)
+    on any error or ambiguous output, since an unnecessary tool call is far
+    cheaper than a stranded, blank answer."""
+    if not trip_data:
+        return True  # nothing fetched yet — always allow the first search
+
+    available = ", ".join(trip_data.keys())
+    classifier_prompt = f"""You are a binary router for a travel-planning agent.
+
+Data already fetched this session (tool names): {available}
+Assistant's last answer (truncated): {last_assistant_msg[:500]}
+User's new message: {latest_user_msg}
+
+Can the user's new message be fully answered by re-analyzing the data already
+fetched (e.g. picking a cheapest option, listing alternatives from a list
+already returned, comparing items already found)? Or does it require fetching
+NEW data — a different city/country, different dates, a different tool
+category, or anything not already covered above?
+
+Reply with exactly one word, nothing else: REUSE or FRESH."""
+
+    try:
+        classifier = ChatGroq(model=CLASSIFIER_MODEL, temperature=0, max_tokens=5)
+        result = await classifier.ainvoke([HumanMessage(content=classifier_prompt)])
+        verdict = (result.content or "").strip().upper()
+        return not verdict.startswith("REUSE")
+    except Exception:
+        return True  # classifier failed — fail open, keep tools available
+
+
 # --- CORE LOGIC ---
 async def run_agent(chat_history, trip_data, chat_container):
     async with AsyncExitStack() as stack:
@@ -209,20 +250,16 @@ async def run_agent(chat_history, trip_data, chat_container):
             # --- HARD GATE: decide in code, not just in the prompt, whether this turn
             # is even allowed to call tools. A system-prompt instruction like "don't
             # call tools on follow-ups" is only a suggestion the model can ignore.
-            # Binding no tools at all makes it physically impossible for the model
-            # to call one, regardless of what it "wants" to do.
-            FRESH_SEARCH_TRIGGERS = [
-                "search again", "check again", "look again", "refresh", "recheck",
-                "different date", "different dates", "other dates", "new dates",
-                "different city", "another city", "new city", "change destination",
-                "new destination", "different route", "other route",
-            ]
+            # The decision itself is semantic (via needs_fresh_tool_data), not a
+            # keyword match, so it generalizes to phrasing we didn't anticipate
+            # ("compare that to Singapore" correctly reads as needing fresh data).
             latest_user_msg = next(
                 (m["content"] for m in reversed(chat_history) if m["role"] == "user"), ""
-            ).lower()
-            needs_fresh_search = (not trip_data) or any(
-                trigger in latest_user_msg for trigger in FRESH_SEARCH_TRIGGERS
             )
+            latest_assistant_msg = next(
+                (m["content"] for m in reversed(chat_history) if m["role"] == "assistant"), ""
+            )
+            needs_fresh_search = await needs_fresh_tool_data(latest_user_msg, trip_data, latest_assistant_msg)
 
             llm_active = llm.bind_tools(langchain_tools) if needs_fresh_search else llm
 
@@ -292,8 +329,11 @@ async def run_agent(chat_history, trip_data, chat_container):
             # 6. Final Answer
             status_text.info("📝 Generating final itinerary...")
             final_response = await llm_active.ainvoke(messages)
-            status_text.empty() 
-            return final_response.content
+            status_text.empty()
+            return final_response.content or (
+                "I couldn't generate a proper answer for that — could you rephrase, "
+                "or ask me to search fresh data for the new request?"
+            )
 
         except Exception as e:
             status_text.error(f"Error: {str(e)}")
