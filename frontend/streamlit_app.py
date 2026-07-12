@@ -205,8 +205,27 @@ async def run_agent(chat_history, trip_data, chat_container):
 
             # 3. Initialize LLM
             llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1)
-            llm_with_tools = llm.bind_tools(langchain_tools)
-            
+
+            # --- HARD GATE: decide in code, not just in the prompt, whether this turn
+            # is even allowed to call tools. A system-prompt instruction like "don't
+            # call tools on follow-ups" is only a suggestion the model can ignore.
+            # Binding no tools at all makes it physically impossible for the model
+            # to call one, regardless of what it "wants" to do.
+            FRESH_SEARCH_TRIGGERS = [
+                "search again", "check again", "look again", "refresh", "recheck",
+                "different date", "different dates", "other dates", "new dates",
+                "different city", "another city", "new city", "change destination",
+                "new destination", "different route", "other route",
+            ]
+            latest_user_msg = next(
+                (m["content"] for m in reversed(chat_history) if m["role"] == "user"), ""
+            ).lower()
+            needs_fresh_search = (not trip_data) or any(
+                trigger in latest_user_msg for trigger in FRESH_SEARCH_TRIGGERS
+            )
+
+            llm_active = llm.bind_tools(langchain_tools) if needs_fresh_search else llm
+
             # 4. Construct Message History with System Prompt
             # Replay the full prior conversation (not just the latest turn) so the
             # model retains context across messages. Cap it to the last N turns to
@@ -231,8 +250,11 @@ async def run_agent(chat_history, trip_data, chat_container):
                 else:
                     messages.append(AIMessage(content=m["content"]))
 
+            if not needs_fresh_search:
+                status_text.info("💡 Answering from previously fetched trip data — no new search needed.")
+
             # 5. Agent Loop
-            ai_msg = await llm_with_tools.ainvoke(messages)
+            ai_msg = await llm_active.ainvoke(messages)
             messages.append(ai_msg)
 
             if ai_msg.tool_calls:
@@ -269,7 +291,7 @@ async def run_agent(chat_history, trip_data, chat_container):
             
             # 6. Final Answer
             status_text.info("📝 Generating final itinerary...")
-            final_response = await llm_with_tools.ainvoke(messages)
+            final_response = await llm_active.ainvoke(messages)
             status_text.empty() 
             return final_response.content
 
