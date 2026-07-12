@@ -1,6 +1,7 @@
 import streamlit as st
 import asyncio
 import os
+import json
 import nest_asyncio
 from contextlib import AsyncExitStack
 from pydantic import create_model, Field
@@ -154,18 +155,24 @@ You are an expert, factual AI Travel Agent. Your goal is to plan realistic, book
 - **RADIUS:** Default to 5000 (5km) for city center, or 20000 (20km) if the user asks for "nearby" spots.
 
 #### 4. 💰 BUDGET (`calculate_trip_budget`)
-- **EXECUTION:** Call this tool **LAST**.
-- **DATA SOURCE:** Feed the *actual* flight price and *actual* (or estimated) hotel price you found into this tool. Do not use the default values if you have real data.
+- **EXECUTION:** Call this tool **LAST**, only on the *first* full plan for a trip — not on every follow-up.
+- **VALID `budgetLevel` VALUES:** the tool only accepts exactly `budget`, `mid-range`, or `luxury` (nothing else — e.g. NOT `"low"`, `"cheap"`). Map the user's wording: "cheap/low/minimum" → `budget`, "moderate/comfortable" → `mid-range`, "luxury/high-end" → `luxury`. If you send an invalid value, the tool silently falls back to `mid-range` pricing, which will be wrong.
+- **IMPORTANT LIMITATION:** this tool does NOT accept real flight/hotel prices as input — it only returns a generic estimate for the chosen `budgetLevel`. Do NOT claim you "fed it the real price." Instead, report the tool's estimate labeled as "Generic estimate," and **separately** compute and clearly label a "Actual total (from real data found)" by summing the exact flight price + (hotel nightly price × nights) + a stated daily-expense estimate. When the user asks you to minimize cost, the actual total is what should change — the generic tool estimate will not.
+
+### 🔁 FOLLOW-UP QUESTIONS (DO NOT RE-CALL TOOLS UNNECESSARILY)
+- Prior tool results for this conversation are included below under `PRIOR TRIP DATA`, if any exist. Treat that as ground truth.
+- If the user's follow-up can be answered by re-reasoning over `PRIOR TRIP DATA` (e.g. "pick the cheapest hotel from that list," "minimize cost," "which one is best for families") — DO NOT call any tool again. Just re-analyze the existing data and answer directly.
+- Only call a tool again if the user asks for something the existing data cannot answer — a different city, different dates, a different category of place, or explicitly asks you to "search again" / "check for more/cheaper options."
 
 ### 📝 OUTPUT FORMAT
 1. **Summary:** A quick breakdown of flight options and hotel recommendations.
 2. **Itinerary:** A day-by-day plan using the specific *Attractions* found by `search_places`.
-3. **Budget:** A total cost estimation.
+3. **Budget:** Both the generic tool estimate and the actual computed total (see above).
 4. **Disclaimer:** "Prices and availability are subject to change."
 """
 
 # --- CORE LOGIC ---
-async def run_agent(chat_history, chat_container):
+async def run_agent(chat_history, trip_data, chat_container):
     async with AsyncExitStack() as stack:
         status_text = chat_container.empty()
         status_text.info("🔌 Connecting to Server...")
@@ -208,6 +215,16 @@ async def run_agent(chat_history, chat_container):
             trimmed_history = [m for m in chat_history if m["role"] in ("user", "assistant")][-MAX_HISTORY_TURNS:]
 
             messages = [SystemMessage(content=SYSTEM_PROMPT)]
+
+            if trip_data:
+                prior_data_block = "\n\n".join(
+                    f"### {tool_name}\n{json.dumps(result)[:2000]}"
+                    for tool_name, result in trip_data.items()
+                )
+                messages.append(SystemMessage(
+                    content=f"PRIOR TRIP DATA (already fetched this session — reuse it, don't refetch unless truly needed):\n\n{prior_data_block}"
+                ))
+
             for m in trimmed_history:
                 if m["role"] == "user":
                     messages.append(HumanMessage(content=m["content"]))
@@ -243,6 +260,12 @@ async def run_agent(chat_history, chat_container):
                             name=tool_call['name']
                         )
                         messages.append(tool_msg)
+
+                        # Persist for future turns (keyed by tool name; last call wins)
+                        try:
+                            trip_data[tool_call['name']] = json.loads(content_text)
+                        except (ValueError, TypeError):
+                            trip_data[tool_call['name']] = content_text
             
             # 6. Final Answer
             status_text.info("📝 Generating final itinerary...")
@@ -258,6 +281,12 @@ async def run_agent(chat_history, chat_container):
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "system", "content": "I am your AI Travel Agent. Where would you like to go?"}]
 
+# Raw tool results from prior turns, keyed by tool name -> last result JSON.
+# This is what lets the model answer follow-ups ("minimize cost", "pick the cheapest")
+# without re-calling every tool from scratch each time.
+if "trip_data" not in st.session_state:
+    st.session_state.trip_data = {}
+
 for message in st.session_state.messages:
     if message["role"] != "system": # Don't show system prompt in chat
         with st.chat_message(message["role"]):
@@ -269,7 +298,7 @@ if prompt := st.chat_input("Where do you want to go?"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        response = asyncio.run(run_agent(st.session_state.messages, st.empty()))
+        response = asyncio.run(run_agent(st.session_state.messages, st.session_state.trip_data, st.empty()))
         
         if response:
             st.markdown(response)
