@@ -9,7 +9,7 @@ from datetime import datetime
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage, ToolMessage, SystemMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
 from langchain_core.tools import StructuredTool
 
 st.markdown("""
@@ -165,7 +165,7 @@ You are an expert, factual AI Travel Agent. Your goal is to plan realistic, book
 """
 
 # --- CORE LOGIC ---
-async def run_agent(query, chat_container):
+async def run_agent(chat_history, chat_container):
     async with AsyncExitStack() as stack:
         status_text = chat_container.empty()
         status_text.info("🔌 Connecting to Server...")
@@ -201,10 +201,18 @@ async def run_agent(query, chat_container):
             llm_with_tools = llm.bind_tools(langchain_tools)
             
             # 4. Construct Message History with System Prompt
-            messages = [
-                SystemMessage(content=SYSTEM_PROMPT),
-                HumanMessage(content=query)
-            ]
+            # Replay the full prior conversation (not just the latest turn) so the
+            # model retains context across messages. Cap it to the last N turns to
+            # keep token usage / latency bounded on long sessions.
+            MAX_HISTORY_TURNS = 12
+            trimmed_history = [m for m in chat_history if m["role"] in ("user", "assistant")][-MAX_HISTORY_TURNS:]
+
+            messages = [SystemMessage(content=SYSTEM_PROMPT)]
+            for m in trimmed_history:
+                if m["role"] == "user":
+                    messages.append(HumanMessage(content=m["content"]))
+                else:
+                    messages.append(AIMessage(content=m["content"]))
 
             # 5. Agent Loop
             ai_msg = await llm_with_tools.ainvoke(messages)
@@ -261,7 +269,7 @@ if prompt := st.chat_input("Where do you want to go?"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        response = asyncio.run(run_agent(prompt, st.empty()))
+        response = asyncio.run(run_agent(st.session_state.messages, st.empty()))
         
         if response:
             st.markdown(response)
