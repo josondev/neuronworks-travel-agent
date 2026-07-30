@@ -232,7 +232,7 @@ async def run_agent(chat_history, trip_data, chat_container):
                 async def call_mcp_tool(tool_name=tool.name, **kwargs):
                     return await session.call_tool(tool_name, arguments=kwargs)
 
-                input_model = create_pydantic_model_from_schema(tool.name, tool.inputSchema)
+                input_model = create_pydantic_model_from_schema(tool.name, tool.input_schema)
                 lc_tool = StructuredTool.from_function(
                     func=None,
                     coroutine=call_mcp_tool,
