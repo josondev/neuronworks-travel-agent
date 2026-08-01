@@ -245,7 +245,7 @@ async def run_agent(chat_history, trip_data, chat_container):
             status_text.info(f"🛠️ Found {len(langchain_tools)} tools. Thinking...")
 
             # 3. Initialize LLM
-            llm = ChatGroq(model="meta-llama/llama-prompt-guard-2-86m", temperature = 0)
+            llm = ChatGroq(model="minimaxai/minimax-m2.7", temperature = 0)
 
             # --- HARD GATE: decide in code, not just in the prompt, whether this turn
             # is even allowed to call tools. A system-prompt instruction like "don't
