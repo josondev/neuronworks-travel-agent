@@ -6,6 +6,8 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import dns from 'dns';
+dns.setDefaultResultOrder('ipv4first');
 
 // 1. SILENCE LOGS
 const originalLog = console.log;
