@@ -7,6 +7,11 @@ export class CurrencyService {
     }
     async getExchangeRate(args) {
         const { from, to, amount = 1 } = args;
+        if (!from || !to || typeof from !== 'string' || typeof to !== 'string')
+        {
+            console.error("Currency service: missing/invalid currency codes", args);
+            return { error: "Missing 'from' or 'to' currency code", received: args };
+        }
         if (!this.apiKey) {
             return {
                 from, to, amount,
