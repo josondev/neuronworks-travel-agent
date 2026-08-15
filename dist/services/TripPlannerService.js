@@ -70,6 +70,10 @@ export class TripPlannerService {
             services: {}
         };
 
+        // All independent providers are queried in parallel, but every call has
+        // an upper bound so one slow external service can never hold the entire
+        // travel plan hostage indefinitely. Partial live data is preferable to a
+        // spinner that never returns.
         const [flights, hotels, attractions, restaurants, weather, budget, currency] =
             await Promise.all([
                 this.safeCall('flights', () => this.flightService.searchFlights({
@@ -78,34 +82,34 @@ export class TripPlannerService {
                     departDate,
                     returnDate,
                     passengers: travelers
-                })),
+                }), 20000),
                 this.safeCall('hotels', () => this.accommodationService.searchAccommodation({
                     city: destinationCity,
                     checkIn: departDate,
                     checkOut: returnDate,
                     adults: travelers
-                })),
+                }), 20000),
                 this.safeCall('attractions', () => this.placesService.getAttractions(
                     destinationCity,
                     8,
                     placesRadius
-                )),
+                ), 20000),
                 this.safeCall('restaurants', () => this.placesService.getRestaurants(
                     destinationCity,
                     8
-                )),
+                ), 20000),
                 this.safeCall('weather', () => this.weatherService.getWeatherForecast({
                     city: destinationCity,
                     country: destinationCountry,
                     startDate: departDate,
                     endDate: returnDate
-                })),
+                }), 20000),
                 this.safeCall('budget', () => this.calculateBudget({
                     destinations: [destinationCity],
                     duration: durationNights,
                     travelers,
                     budgetLevel
-                })),
+                }), 5000),
                 this.getCurrencyIfRequested(currencyFrom, currencyTo, currencyAmount)
             ]);
 
@@ -168,14 +172,29 @@ export class TripPlannerService {
         };
     }
 
-    async safeCall(name, fn) {
-        try { return await fn(); }
-        catch (error) { return { error: `${name} service failed: ${error?.message || String(error)}`, results: [] }; }
+    async safeCall(name, fn, timeoutMs = 20000) {
+        const started = Date.now();
+        try {
+            const result = await Promise.race([
+                Promise.resolve().then(fn),
+                new Promise((_, reject) => {
+                    setTimeout(() => reject(new Error(`${name} service timed out after ${timeoutMs / 1000}s`)), timeoutMs);
+                })
+            ]);
+            console.error(`✅ ${name} service completed in ${Date.now() - started}ms`);
+            return result;
+        } catch (error) {
+            console.error(`⚠️ ${name} service failed after ${Date.now() - started}ms:`, error?.message || String(error));
+            return {
+                error: `${name} service failed: ${error?.message || String(error)}`,
+                results: []
+            };
+        }
     }
 
     async getCurrencyIfRequested(from, to, amount) {
         if (!from || !to) return { skipped: true, reason: 'Currency conversion was not requested.' };
-        return this.safeCall('currency', () => this.currencyService.getExchangeRate({ from, to, amount }));
+        return this.safeCall('currency', () => this.currencyService.getExchangeRate({ from, to, amount }), 10000);
     }
 
     calculateDuration(startDate, endDate) {
