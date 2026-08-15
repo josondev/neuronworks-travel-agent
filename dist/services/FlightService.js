@@ -5,121 +5,136 @@ dotenv.config();
 
 export class FlightService {
     constructor() {
-        this.apiKey = process.env.AMADEUS_CLIENT_ID || '';
-        this.apiSecret = process.env.AMADEUS_CLIENT_SECRET || '';
-        this.baseUrl = 'https://test.api.amadeus.com/v2';
-        this.accessToken = '';
-        this.tokenExpiry = 0;
+        // SerpApi replaces the retired Amadeus Self-Service integration.
+        this.apiKey = process.env.SERPAPI_API_KEY || '';
+        this.baseUrl = 'https://serpapi.com/search.json';
 
-        if (!this.apiKey || this.apiKey === 'test_key_replace_later') {
-            console.warn('⚠️ Amadeus API key not configured. Flight service will return mock data.');
-        }
-    }
-
-    async getAccessToken() {
-        if (this.accessToken && Date.now() < this.tokenExpiry) {
-            return this.accessToken;
-        }
-        try {
-            const response = await axios.post('https://test.api.amadeus.com/v1/security/oauth2/token', 
-                new URLSearchParams({
-                    grant_type: 'client_credentials',
-                    client_id: this.apiKey,
-                    client_secret: this.apiSecret,
-                }), {
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                }
-            );
-            this.accessToken = response.data.access_token;
-            this.tokenExpiry = Date.now() + (response.data.expires_in - 300) * 1000;
-            return this.accessToken;
-        } catch (error) {
-            console.error('❌ Failed to get Amadeus access token:', error.message);
-            throw new Error('Authentication failed with Amadeus API');
+        if (!this.apiKey) {
+            console.warn('⚠️ SERPAPI_API_KEY is not configured. Flight search will return no results.');
         }
     }
 
     async searchFlights(params) {
-        if (!this.apiKey || this.apiKey === 'test_key_replace_later') {
-            return this.getMockFlightData(params);
+        if (!this.apiKey) {
+            console.error('❌ Flight search unavailable: SERPAPI_API_KEY is missing.');
+            return [];
         }
+
         try {
-            const token = await this.getAccessToken();
-            const searchParams = {
-                originLocationCode: params.origin.toUpperCase(),
-                destinationLocationCode: params.destination.toUpperCase(),
-                departureDate: params.departDate,
-                adults: params.passengers,
-                max: 10
+            const requestParams = {
+                engine: 'google_flights',
+                api_key: this.apiKey,
+                departure_id: String(params.origin || '').toUpperCase(),
+                arrival_id: String(params.destination || '').toUpperCase(),
+                outbound_date: params.departDate,
+                type: params.returnDate ? 1 : 2,
+                adults: Math.max(1, Number(params.passengers) || 1),
+                travel_class: 1,
+                sort_by: 2,
+                currency: 'USD',
+                gl: 'us',
+                hl: 'en'
             };
 
-            if (params.returnDate) searchParams.returnDate = params.returnDate;
+            if (params.returnDate) {
+                requestParams.return_date = params.returnDate;
+            }
 
-            const response = await axios.get(`${this.baseUrl}/shopping/flight-offers`, {
-                params: searchParams,
-                headers: { Authorization: `Bearer ${token}` },
+            const response = await axios.get(this.baseUrl, {
+                params: requestParams,
+                timeout: 30000
             });
 
-            return this.transformAmadeusResponse(response.data);
+            if (response.data?.error) {
+                throw new Error(response.data.error);
+            }
+
+            return this.transformSerpApiResponse(response.data);
         } catch (error) {
-            console.error('❌ Amadeus API error:', error.response?.data || error.message);
-            return this.getMockFlightData(params);
+            console.error(
+                '❌ Google Flights / SerpApi error:',
+                error.response?.data || error.message
+            );
+
+            // IMPORTANT: never return fabricated/mock flights.
+            // The agent's zero-hallucination policy requires an empty result
+            // when live flight data cannot be retrieved.
+            return [];
         }
     }
 
-    transformAmadeusResponse(data) {
-        if (!data.data || data.data.length === 0) return [];
-        
+    transformSerpApiResponse(data) {
+        const rawFlights = [
+            ...(data.best_flights || []),
+            ...(data.other_flights || [])
+        ];
+
+        if (rawFlights.length === 0) {
+            return [];
+        }
+
         const uniqueFlights = new Map();
-        data.data.forEach((offer) => {
-            const firstItinerary = offer.itineraries[0];
-            const firstSegment = firstItinerary.segments[0];
-            const lastSegment = firstItinerary.segments[firstItinerary.segments.length - 1];
-            const carrierCode = firstSegment.carrierCode;
-            const airline = data.dictionaries?.carriers?.[carrierCode] || carrierCode;
-            const departure = firstSegment.departure.at;
-            const price = parseFloat(offer.price.total);
-            
-            const key = `${carrierCode}-${departure}`;
-            
-            if (!uniqueFlights.has(key) || price < uniqueFlights.get(key).price) {
+        const googleFlightsUrl = data.search_metadata?.google_flights_url || null;
+
+        for (const offer of rawFlights) {
+            const segments = Array.isArray(offer.flights) ? offer.flights : [];
+            if (segments.length === 0) continue;
+
+            const firstSegment = segments[0];
+            const lastSegment = segments[segments.length - 1];
+            const price = Number(offer.price);
+
+            if (!Number.isFinite(price)) continue;
+
+            const departure = firstSegment.departure_airport?.time || '';
+            const arrival = lastSegment.arrival_airport?.time || '';
+
+            const airlines = [
+                ...new Set(
+                    segments
+                        .map(segment => segment.airline)
+                        .filter(Boolean)
+                )
+            ];
+
+            const durationMinutes = Number(
+                segments.reduce(
+                    (total, segment) => total + (Number(segment.duration) || 0),
+                    0
+                )
+            );
+
+            const durationHours = Math.floor(durationMinutes / 60);
+            const durationRemainingMinutes = durationMinutes % 60;
+            const duration = durationMinutes > 0
+                ? `${durationHours}h ${durationRemainingMinutes}m`
+                : 'Unknown';
+
+            const key = [
+                airlines.join(','),
+                firstSegment.flight_number || '',
+                departure,
+                arrival,
+                price
+            ].join('|');
+
+            if (!uniqueFlights.has(key)) {
                 uniqueFlights.set(key, {
-                    airline: airline,
-                    price: price,
-                    currency: offer.price.currency,
-                    departure: departure,
-                    arrival: lastSegment.arrival.at,
-                    duration: firstItinerary.duration.replace('PT', '').toLowerCase(),
-                    stops: firstItinerary.segments.length - 1,
-                    bookingLink: `Flight ID: ${offer.id}`
+                    airline: airlines.join(', ') || 'Unknown airline',
+                    price,
+                    currency: data.search_parameters?.currency || 'USD',
+                    departure,
+                    arrival,
+                    duration,
+                    stops: Math.max(0, segments.length - 1),
+                    bookingLink: googleFlightsUrl,
+                    source: 'Google Flights via SerpApi'
                 });
             }
-        });
-        return Array.from(uniqueFlights.values()).slice(0, 10);
-    }
+        }
 
-    getMockFlightData(params) {
-        const basePrice = 350;
-        const priceVariation = Math.floor(Math.random() * 200);
-        return [
-            {
-                airline: 'United Airlines',
-                price: basePrice + priceVariation,
-                currency: 'USD',
-                departure: `${params.departDate}T08:00:00`,
-                arrival: `${params.departDate}T11:30:00`,
-                duration: '3h 30m',
-                stops: 0,
-            },
-            {
-                airline: 'Delta Air Lines',
-                price: basePrice + priceVariation - 50,
-                currency: 'USD',
-                departure: `${params.departDate}T10:15:00`,
-                arrival: `${params.departDate}T15:45:00`,
-                duration: '5h 30m',
-                stops: 1,
-            }
-        ];
+        return Array.from(uniqueFlights.values())
+            .sort((a, b) => a.price - b.price)
+            .slice(0, 10);
     }
 }
