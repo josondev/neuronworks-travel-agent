@@ -20,7 +20,7 @@ st.markdown("""
 <style>
 :root{--bg:#080b14;--border:rgba(255,255,255,.10);--muted:#94a3b8}
 .stApp{background:radial-gradient(circle at 10% 0%,rgba(37,99,235,.42),transparent 34%),radial-gradient(circle at 90% 10%,rgba(124,58,237,.36),transparent 32%),var(--bg)}
-.block-container{max-width:1180px;padding-top:3rem;padding-bottom:6rem}
+.block-container{max-width:1180px;padding-top:6rem;padding-bottom:6rem}
 .hero{padding:26px 28px;border-radius:22px;margin-bottom:18px;background:linear-gradient(135deg,rgba(37,99,235,.28),rgba(124,58,237,.22));border:1px solid var(--border)}
 .hero h1{margin:0;color:#fff;font-size:2.2rem}.hero p{margin:8px 0;color:#cbd5e1}
 .pill{display:inline-block;padding:5px 11px;border-radius:999px;background:rgba(255,255,255,.09);color:#e2e8f0;font-size:.75rem;border:1px solid var(--border)}
