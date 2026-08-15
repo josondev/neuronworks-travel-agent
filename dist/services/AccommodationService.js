@@ -14,7 +14,10 @@ export class AccommodationService {
 
         if (!this.apiKey) {
             console.error('❌ Hotel search unavailable: SERPAPI_API_KEY is missing.');
-            return { error: 'Live hotel search unavailable because SERPAPI_API_KEY is not configured.', results: [] };
+            return {
+                error: 'Live hotel search unavailable because SERPAPI_API_KEY is not configured.',
+                results: []
+            };
         }
 
         if (!city || !checkIn || !checkOut) {
@@ -41,9 +44,7 @@ export class AccommodationService {
                 timeout: 30000
             });
 
-            if (response.data?.error) {
-                throw new Error(response.data.error);
-            }
+            if (response.data?.error) throw new Error(response.data.error);
 
             const properties = Array.isArray(response.data?.properties)
                 ? response.data.properties
@@ -63,9 +64,11 @@ export class AccommodationService {
                     reviews: Number.isFinite(property.reviews) ? property.reviews : null,
                     hotelClass: property.hotel_class ?? null,
                     address: property.address || property.description || null,
-                    amenities: Array.isArray(property.amenities) ? property.amenities.slice(0, 12) : [],
+                    amenities: Array.isArray(property.amenities)
+                        ? property.amenities.slice(0, 12)
+                        : [],
                     propertyToken: property.property_token || null,
-                    bookingLink: property.link || property.serpapi_property_details_link || null,
+                    searchLink: property.link || property.serpapi_property_details_link || null,
                     source: 'Google Hotels via SerpApi'
                 }))
                 .filter((hotel) => hotel.name && hotel.price !== null);
