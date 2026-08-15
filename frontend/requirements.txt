@@ -8,3 +8,5 @@ mcp==2.0.0
 pydantic
 httpx
 sse-starlette
+langchain-huggingface 
+huggingface_hub
