@@ -32,11 +32,9 @@ div[data-testid="stChatMessageContent"]{color:var(--text)}
 """, unsafe_allow_html=True)
 
 st.markdown("""
-<div class="hero">
-<span class="pill">● LIVE MCP · FAST MODE</span>
+<div class="hero"><span class="pill">● LIVE MCP · FAST MODE</span>
 <h1>✈️ Neuronworks Travel Agent</h1>
-<p>Live flights · hotels · places · restaurants · weather · budget · currency</p>
-</div>
+<p>Live flights · hotels · places · restaurants · weather · budget · currency</p></div>
 """, unsafe_allow_html=True)
 
 with st.sidebar:
@@ -48,7 +46,7 @@ with st.sidebar:
         st.stop()
     os.environ["GROQ_API_KEY"] = groq_api_key
     st.success("🟢 Fast mode ready")
-    st.caption("Single fast model: openai/gpt-oss-20b on Groq")
+    st.caption("GPT-OSS 20B on Groq · local fast routing first")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -56,53 +54,40 @@ if "trip_context" not in st.session_state:
     st.session_state.trip_context = None
 
 KNOWN_IATA = {
-    "chennai":"MAA","madurai":"IXM","coimbatore":"CJB","colombo":"CMB",
-    "bangalore":"BLR","bengaluru":"BLR","hyderabad":"HYD","delhi":"DEL",
-    "mumbai":"BOM","kochi":"COK"
+    "chennai": ("MAA", "India"), "madurai": ("IXM", "India"), "coimbatore": ("CJB", "India"),
+    "colombo": ("CMB", "Sri Lanka"), "bangalore": ("BLR", "India"), "bengaluru": ("BLR", "India"),
+    "hyderabad": ("HYD", "India"), "delhi": ("DEL", "India"), "mumbai": ("BOM", "India"),
+    "kochi": ("COK", "India"), "trivandrum": ("TRV", "India"), "pondicherry": ("PNY", "India"),
 }
 
 
-def parse_json(text: str) -> Dict[str, Any]:
-    text = (text or "").strip()
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.I | re.S)
-    if fenced:
-        text = fenced.group(1)
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        raise ValueError("Router did not return valid JSON")
-    return json.loads(text[start:end+1])
+def iso_date(v):
+    try: return datetime.strptime(str(v), "%Y-%m-%d").date()
+    except Exception: return None
 
 
-def iso_date(value):
-    try:
-        return datetime.strptime(str(value), "%Y-%m-%d").date()
-    except Exception:
-        return None
-
-
-def as_list(value): return value if isinstance(value, list) else []
-def as_dict(value): return value if isinstance(value, dict) else {}
-
-
-def money(value, currency="USD"):
-    try: return f"{currency} {float(value):,.2f}"
+def money(v, c="USD"):
+    try: return f"{c} {float(v):,.2f}"
     except Exception: return "Unavailable"
 
 
-def current_request():
-    return (st.session_state.trip_context or {}).get("request", {})
+def as_list(v): return v if isinstance(v, list) else []
+def as_dict(v): return v if isinstance(v, dict) else {}
 
 
 def normalize_request(req: Dict[str, Any], base: Dict[str, Any] | None = None):
     base = base or {}
     city = str(req.get("destinationCity") or base.get("destinationCity") or "").strip()
     airport = str(req.get("destinationAirport") or base.get("destinationAirport") or "").strip().upper()
-    if not airport and city:
-        airport = KNOWN_IATA.get(city.lower(), "")
+    country = str(req.get("destinationCountry") or base.get("destinationCountry") or "").strip()
+    if city.lower() in KNOWN_IATA:
+        default_airport, default_country = KNOWN_IATA[city.lower()]
+        airport = airport or default_airport
+        country = country or default_country
     return {
         "origin": str(req.get("origin") or base.get("origin") or "").strip().upper(),
         "destinationCity": city,
-        "destinationCountry": str(req.get("destinationCountry") or base.get("destinationCountry") or "India").strip(),
+        "destinationCountry": country or "India",
         "destinationAirport": airport,
         "departDate": str(req.get("departDate") or base.get("departDate") or "").strip(),
         "returnDate": str(req.get("returnDate") or base.get("returnDate") or "").strip(),
@@ -115,51 +100,91 @@ def normalize_request(req: Dict[str, Any], base: Dict[str, Any] | None = None):
     }
 
 
-async def route_request(user_message: str, context: Dict[str, Any] | None):
-    base = context or {}
-    base_request = base.get("request", {}) if isinstance(base, dict) else {}
-    prompt = f"""
-Return JSON only. You are the fast turn router for a travel agent.
-Actions: PLAN, UPDATE, COMPARE, REUSE, ASK.
+def parse_user_message_locally(message: str, context: Dict[str, Any] | None):
+    """Fast, deterministic routing for the common travel turns.
+    This avoids a network LLM call for the majority of requests and therefore
+    avoids the unhandled TaskGroup failure that was happening in the Groq router.
+    """
+    text = message.strip()
+    lower = text.lower()
+    base = (context or {}).get("request", {}) if isinstance(context, dict) else {}
 
-CURRENT TRIP CONTEXT (inherit any omitted fields):
-{json.dumps(base_request, ensure_ascii=False)}
+    # Existing-context follow-ups never need an LLM router.
+    compare = re.search(r"(?:compare|comparison)\s+(?:this|that|it)\s+(?:with|to)\s+([A-Za-z][A-Za-z .'-]+?)(?:\.|$)", lower)
+    if compare and context:
+        city = compare.group(1).strip(" .").title()
+        return "COMPARE", normalize_request({"destinationCity": city}, base)
 
-NEW USER MESSAGE:
-{user_message}
+    update = re.search(r"(?:change|switch|make)\s+(?:the\s+)?destination\s+(?:to|into)\s+([A-Za-z][A-Za-z .'-]+?)(?:\.|$)", lower)
+    if update and context:
+        city = update.group(1).strip(" .").title()
+        return "UPDATE", normalize_request({"destinationCity": city}, base)
 
-Rules:
-- Preserve context across turns.
-- "compare this with X" => COMPARE, candidate destination X, inherit origin/dates/travelers/budget.
-- "change destination to X" => UPDATE, inherit all other fields.
-- A new trip missing origin or dates => ASK. Never invent dates.
-- Follow-ups about cheapest/best/from existing results => REUSE.
-- Infer well-known IATA codes when confident: Chennai MAA, Madurai IXM, Coimbatore CJB, Colombo CMB.
+    if context and any(k in lower for k in ["cheapest hotel", "cheapest flight", "which hotel", "which flight", "best hotel", "best flight", "how much", "what is the budget"]):
+        return "REUSE", normalize_request({}, base)
 
-Return exactly:
-{"action":"PLAN|UPDATE|COMPARE|REUSE|ASK","request":{"origin":null,"destinationCity":null,"destinationCountry":null,"destinationAirport":null,"departDate":null,"returnDate":null,"passengers":null,"budgetLevel":null,"currencyFrom":null,"currencyTo":null,"currencyAmount":1,"placesRadius":5000}}
-"""
-    model = ChatGroq(model="openai/gpt-oss-20b", temperature=0, max_tokens=220)
+    # Explicitly stated city pair: from X to Y.
+    pair = re.search(r"from\s+([A-Za-z][A-Za-z .'-]+?)\s+to\s+([A-Za-z][A-Za-z .'-]+?)(?:\s+from\s+|\s+on\s+|\s+for\s+|\.|$)", lower)
+    origin = pair.group(1).strip().title() if pair else ""
+    destination = pair.group(2).strip().title() if pair else ""
+    if destination.lower() in KNOWN_IATA:
+        destination_airport, destination_country = KNOWN_IATA[destination.lower()]
+    else:
+        destination_airport, destination_country = "", ""
+
+    date_matches = re.findall(r"(\d{4}-\d{2}-\d{2})", text)
+    if len(date_matches) >= 2:
+        depart, ret = date_matches[0], date_matches[1]
+    else:
+        pretty = re.search(r"([A-Za-z]+\s+\d{1,2},\s*\d{4})\s*(?:to|[-–])\s*([A-Za-z]+\s+\d{1,2},\s*\d{4})", text)
+        if pretty:
+            try:
+                depart = datetime.strptime(pretty.group(1), "%B %d, %Y").strftime("%Y-%m-%d")
+                ret = datetime.strptime(pretty.group(2), "%B %d, %Y").strftime("%Y-%m-%d")
+            except ValueError:
+                depart = ret = ""
+        else:
+            depart = ret = ""
+
+    pax = None
+    pax_match = re.search(r"(?:for\s+)?(\d+)\s*(?:traveler|travellers|travelers|people|persons|ppl)", lower)
+    if pax_match: pax = int(pax_match.group(1))
+    budget = "luxury" if "luxury" in lower else ("mid-range" if "mid-range" in lower or "moderate" in lower else ("budget" if "budget" in lower or "cheap" in lower or "minimum" in lower else None))
+
+    if destination and (depart and ret):
+        req = normalize_request({
+            "origin": origin,
+            "destinationCity": destination,
+            "destinationCountry": destination_country or None,
+            "destinationAirport": destination_airport,
+            "departDate": depart,
+            "returnDate": ret,
+            "passengers": pax,
+            "budgetLevel": budget,
+        }, base if context else None)
+        return ("UPDATE" if context and (origin or destination or depart or ret) else "PLAN"), req
+
+    if context:
+        return "REUSE", normalize_request({}, base)
+    return None, None
+
+
+async def llm_route_fallback(message: str, context: Dict[str, Any] | None):
+    """Only used when deterministic routing cannot resolve the turn."""
+    base = (context or {}).get("request", {}) if isinstance(context, dict) else {}
+    prompt = f"""Return JSON only. Preserve omitted fields from CURRENT CONTEXT.
+CURRENT CONTEXT: {json.dumps(base, ensure_ascii=False)}
+USER: {message}
+Choose one action: PLAN, UPDATE, COMPARE, REUSE, ASK.
+Never invent dates. Infer only well-known IATA codes.
+Schema: {{\"action\":\"PLAN|UPDATE|COMPARE|REUSE|ASK\",\"request\":{{\"origin\":null,\"destinationCity\":null,\"destinationCountry\":null,\"destinationAirport\":null,\"departDate\":null,\"returnDate\":null,\"passengers\":null,\"budgetLevel\":null}}}}"""
+    model = ChatGroq(model="openai/gpt-oss-20b", temperature=0, max_tokens=180, timeout=12)
     result = await model.ainvoke([HumanMessage(content=prompt)])
-    return parse_json(result.content or "")
-
-
-async def call_bundle(session: ClientSession, args: Dict[str, Any]):
-    result = await session.call_tool("build_trip_data", arguments=args)
-    return json.loads(result.content[0].text)
-
-
-def trip_valid(trip):
-    req = trip.get("request", {})
-    start, end = iso_date(req.get("departDate")), iso_date(req.get("returnDate"))
-    today = date.today()
-    if not start or not end:
-        return False, "Please provide valid departure and return dates in YYYY-MM-DD format."
-    if start < today:
-        return False, f"The departure date {start.isoformat()} is in the past. Today is {today.isoformat()}."
-    if end <= start:
-        return False, "The return date must be after the departure date."
-    return True, ""
+    raw = (result.content or "").strip()
+    start, end = raw.find("{"), raw.rfind("}")
+    if start < 0 or end <= start: raise ValueError("Router returned no JSON")
+    data = json.loads(raw[start:end + 1])
+    return str(data.get("action", "ASK")).upper(), normalize_request(data.get("request") or {}, base)
 
 
 def clean_attractions(items):
@@ -194,127 +219,175 @@ def clean_restaurants(items):
     return out
 
 
-def schedule(trip):
-    req, services = trip.get("request", {}), trip.get("services", {})
+def trip_valid(trip):
+    req = trip.get("request", {})
     start, end = iso_date(req.get("departDate")), iso_date(req.get("returnDate"))
-    attractions, restaurants = clean_attractions(services.get("attractions")), clean_restaurants(services.get("restaurants"))
-    if not start or not end: return []
-    dates=[]; cur=start
-    while cur<=end: dates.append(cur); cur += timedelta(days=1)
-    result=[]; ai=0; ri=0
-    for i, d in enumerate(dates):
-        picks=[] if i in (0,len(dates)-1) else attractions[ai:ai+2]
-        ai += len(picks)
-        restaurant=restaurants[ri] if restaurants else None
-        if restaurants: ri=(ri+1)%len(restaurants)
-        result.append({"date":d.isoformat(),"title":"Arrival" if i==0 else ("Departure" if i==len(dates)-1 else "Sightseeing"),"attractions":picks,"restaurant":restaurant})
-    return result
+    today = date.today()
+    if not start or not end: return False, "Please provide valid departure and return dates in YYYY-MM-DD format."
+    if start < today: return False, f"The departure date {start.isoformat()} is in the past. Today is {today.isoformat()}."
+    if end <= start: return False, "The return date must be after the departure date."
+    return True, ""
 
 
-def summary(trip):
-    req, services = trip.get("request", {}), trip.get("services", {})
-    flights, hotels = as_list(services.get("flights")), as_list(services.get("hotels"))
-    attractions, restaurants = clean_attractions(services.get("attractions")), clean_restaurants(services.get("restaurants"))
-    weather = as_dict(services.get("weather"))
-    fp=min((float(x["price"]) for x in flights if isinstance(x.get("price"),(int,float))), default=None)
-    hp=min((float(x["price"]) for x in hotels if isinstance(x.get("price"),(int,float))), default=None)
-    nights=int(req.get("durationNights") or 0)
-    return {"destination":req.get("destinationCity"),"flight":fp,"hotel":hp,"subtotal":(fp+hp*nights if fp is not None and hp is not None else None),"flights":len(flights),"hotels":len(hotels),"attractions":len(attractions),"restaurants":len(restaurants),"weatherDays":len(as_list(weather.get("results")))}
-
-
-def render_trip(trip, title="## ✈️ Trip at a glance"):
-    req, services, live = trip.get("request",{}), trip.get("services",{}), trip.get("liveDataSummary",{})
+def render_trip(trip):
+    req, services, live = trip.get("request", {}), trip.get("services", {}), trip.get("liveDataSummary", {})
     flights, hotels = as_list(services.get("flights")), as_list(services.get("hotels"))
     attractions, restaurants = clean_attractions(services.get("attractions")), clean_restaurants(services.get("restaurants"))
     weather, budget = as_dict(services.get("weather")), as_dict(services.get("budget"))
-    lines=[title,"",f"**{req.get('origin')} → {req.get('destinationCity')}, {req.get('destinationCountry')}**",f"**{req.get('departDate')} → {req.get('returnDate')} · {req.get('passengers',1)} traveler(s) · {req.get('durationNights')} night(s)**",f"Budget: **{req.get('budgetLevel','budget')}**",""]
-    lines += ["## 🛫 Flights",""]
+    nights = int(req.get("durationNights") or 0)
+    lines = [
+        "## ✈️ Trip at a glance\n",
+        f"**{req.get('origin')} → {req.get('destinationCity')}, {req.get('destinationCountry')}**  ",
+        f"**{req.get('departDate')} → {req.get('returnDate')} · {req.get('passengers',1)} traveler(s) · {nights} night(s)**  ",
+        f"Budget: **{req.get('budgetLevel','budget')}**\n",
+        "## 🛫 Flights\n",
+    ]
     if flights:
-        lines += ["| Airline | Price | Departure | Arrival | Duration | Stops |","|---|---:|---|---|---:|---:|"]
+        lines += ["| Airline | Price | Departure | Arrival | Duration | Stops |", "|---|---:|---|---|---:|---:|"]
         for f in flights[:5]:
-            stops=int(f.get("stops",0) or 0); lines.append(f"| {f.get('airline','Unknown')} | {money(f.get('price'),f.get('currency','USD'))} | {f.get('departure','—')} | {f.get('arrival','—')} | {f.get('duration','—')} | {'Non-stop' if stops==0 else str(stops)+' stop(s)'} |")
-    else: lines.append(f"**Live flights unavailable.** {as_dict(services.get('flights')).get('error','No live flight options returned.')}")
-    lines += ["","## 🏨 Hotels",""]
+            stops=int(f.get("stops",0) or 0)
+            lines.append(f"| {f.get('airline','Unknown')} | {money(f.get('price'),f.get('currency','USD'))} | {f.get('departure','—')} | {f.get('arrival','—')} | {f.get('duration','—')} | {'Non-stop' if stops==0 else str(stops)+' stop(s)'} |")
+    else:
+        lines.append(f"**Live flights unavailable.** {as_dict(services.get('flights')).get('error','No live flight options returned.')}")
+    lines += ["", "## 🏨 Hotels\n"]
     if hotels:
-        lines += ["| Hotel | Nightly | Rating | Reviews |","|---|---:|---:|---:|"]
+        lines += ["| Hotel | Nightly | Rating | Reviews |", "|---|---:|---:|---:|"]
         for h in hotels[:6]:
-            rating=f"{float(h['rating']):.1f}" if isinstance(h.get('rating'),(int,float)) else "—"; lines.append(f"| {h.get('name','Unknown')} | {money(h.get('price'),h.get('currency','USD'))} | {rating} | {h.get('reviews','—')} |")
-    else: lines.append(f"**Live hotels unavailable.** {as_dict(services.get('hotels')).get('error','No live hotel options returned.')}")
-    lines += ["","## 📍 Things to do",""]+[f"- **{p.get('name')}**" for p in attractions[:8]] or ["- No high-quality live tourist attractions were returned."]
-    lines += ["","## 🍽️ Food picks",""]+[f"- **{r.get('name')}**" for r in restaurants[:8]] or ["- No verified restaurant results were returned."]
-    lines += ["","## 🌦️ Weather",""]
-    rows=as_list(weather.get("results"))
+            rating = f"{float(h['rating']):.1f}" if isinstance(h.get('rating'),(int,float)) else "—"
+            lines.append(f"| {h.get('name','Unknown')} | {money(h.get('price'),h.get('currency','USD'))} | {rating} | {h.get('reviews','—')} |")
+    else:
+        lines.append(f"**Live hotels unavailable.** {as_dict(services.get('hotels')).get('error','No live hotel options returned.')}")
+    lines += ["", "## 📍 Things to do\n"]
+    if attractions:
+        lines += [f"- **{p.get('name')}**" for p in attractions[:8]]
+    else:
+        lines.append("- No high-quality live tourist attractions were returned.")
+    lines += ["", "## 🍽️ Food picks\n"]
+    if restaurants:
+        lines += [f"- **{r.get('name')}**" for r in restaurants[:8]]
+    else:
+        lines.append("- No verified restaurant results were returned.")
+    lines += ["", "## 🌦️ Weather\n"]
+    rows = as_list(weather.get("results"))
     if rows:
-        lines += ["| Date | Temp | Feels like | Conditions | Rain |","|---|---:|---:|---|---:|"]
-        for w in rows: lines.append(f"| {w.get('date','—')} | {w.get('temperature','—')}°C | {w.get('feelsLike','—')}°C | {w.get('description','—')} | {w.get('precipitationProbability','—')}% |")
-    else: lines.append(f"**Live weather unavailable.** {weather.get('error','No forecast coverage returned.')}")
-    lines += ["","## 💰 Budget",""]
+        lines += ["| Date | Temp | Feels like | Conditions | Rain |", "|---|---:|---:|---|---:|"]
+        for w in rows:
+            lines.append(f"| {w.get('date','—')} | {w.get('temperature','—')}°C | {w.get('feelsLike','—')}°C | {w.get('description','—')} | {w.get('precipitationProbability','—')}% |")
+    else:
+        lines.append(f"**Live weather unavailable.** {weather.get('error','No forecast coverage returned.')}")
+    lines += ["", "## 💰 Budget\n"]
     if budget:
-        br=budget.get("breakdown",{}); cur=budget.get("currency","USD"); lines += [f"**Generic estimate:** {money(budget.get('total_budget'),cur)}",f"- Flights: {money(br.get('flights_estimate'),cur)}",f"- Accommodation: {money(br.get('accommodation_estimate'),cur)}",f"- Daily expenses: {money(br.get('daily_expenses_estimate'),cur)}"]
-    if live.get("complete"): lines.append(f"**Cheapest live-data subtotal:** {money(live.get('cheapestLiveSubtotal'),live.get('currency','USD'))}")
-    lines += ["","## 🗓️ Suggested itinerary",""]
-    days=schedule(trip)
-    for i,d in enumerate(days,1):
-        lines.append(f"### Day {i} · {d['date']} · {d['title']}")
-        if i==1: lines.append("- ✈️ Arrive and check in")
-        for j,p in enumerate(d["attractions"]): lines.append(f"- **{'Morning' if j==0 else 'Afternoon'}:** {p.get('name')}")
-        if d["restaurant"]: lines.append(f"- 🍽️ **Food:** {d['restaurant'].get('name')}")
-        if i==len(days): lines.append("- 🧳 Check-out / departure")
+        br=budget.get("breakdown",{}); cur=budget.get("currency","USD")
+        lines += [f"**Generic estimate:** {money(budget.get('total_budget'),cur)}", f"- Flights: {money(br.get('flights_estimate'),cur)}", f"- Accommodation: {money(br.get('accommodation_estimate'),cur)}", f"- Daily expenses: {money(br.get('daily_expenses_estimate'),cur)}"]
+    if live.get("complete"):
+        lines.append(f"\n**Cheapest live-data subtotal:** {money(live.get('cheapestLiveSubtotal'),live.get('currency','USD'))}")
+    lines += ["", "## 🗓️ Suggested itinerary\n"]
+    start, end = iso_date(req.get("departDate")), iso_date(req.get("returnDate"))
+    dates=[]; cur=start
+    while cur and end and cur<=end: dates.append(cur); cur += timedelta(days=1)
+    ai=0
+    for i,d in enumerate(dates):
+        title = "Arrival" if i==0 else ("Departure" if i==len(dates)-1 else "Sightseeing")
+        lines.append(f"### Day {i+1} · {d.isoformat()} · {title}")
+        if i==0: lines.append("- ✈️ Arrive and check in")
+        elif i==len(dates)-1: lines.append("- 🧳 Check-out / departure")
+        else:
+            picks=attractions[ai:ai+2]; ai+=len(picks)
+            for j,p in enumerate(picks): lines.append(f"- **{'Morning' if j==0 else 'Afternoon'}:** {p.get('name')}")
+            if restaurants: lines.append(f"- 🍽️ **Food:** {restaurants[(i-1)%len(restaurants)].get('name')}")
         lines.append("")
+    lines += ["## ⚠️ Notes\n", "- Live prices and availability can change before booking.", "- Generic budget estimates are not live booking totals.", "- Weather is shown only for dates actually covered by the live provider.", "- Follow-up messages reuse the saved trip context."]
     return "\n".join(lines)
+
+
+def trip_summary(trip):
+    req, services = trip.get("request",{}), trip.get("services",{})
+    flights, hotels = as_list(services.get("flights")), as_list(services.get("hotels"))
+    attrs, restaurants = clean_attractions(services.get("attractions")), clean_restaurants(services.get("restaurants"))
+    fp=min((float(x["price"]) for x in flights if isinstance(x.get("price"),(int,float))),default=None)
+    hp=min((float(x["price"]) for x in hotels if isinstance(x.get("price"),(int,float))),default=None)
+    nights=int(req.get("durationNights") or 0)
+    return {"destination":req.get("destinationCity"),"flight":fp,"hotel":hp,"subtotal":fp+hp*nights if fp is not None and hp is not None else None,"flights":len(flights),"hotels":len(hotels),"attractions":len(attrs),"restaurants":len(restaurants)}
 
 
 def render_comparison(current, candidate):
-    a,b=summary(current),summary(candidate); req=current.get("request",{})
-    lines=[f"## 🔎 {a['destination']} vs {b['destination']}","",f"Same context: **{req.get('origin')} · {req.get('departDate')} → {req.get('returnDate')} · {req.get('passengers',1)} traveler(s) · {req.get('budgetLevel','budget')}**","","| Metric | Current | Candidate |","|---|---:|---:|"]
-    for label,x,y in [("Cheapest flight",a["flight"],b["flight"]),("Cheapest hotel/night",a["hotel"],b["hotel"]),("Flight options",a["flights"],b["flights"]),("Hotel options",a["hotels"],b["hotels"]),("Verified attractions",a["attractions"],b["attractions"]),("Restaurants",a["restaurants"],b["restaurants"]),("Weather days",a["weatherDays"],b["weatherDays"])]:
+    a,b=trip_summary(current),trip_summary(candidate)
+    req=current.get("request",{})
+    lines=[f"## 🔎 {a['destination']} vs {b['destination']}", "", f"**Same dates:** {req.get('departDate')} → {req.get('returnDate')} · **{req.get('passengers',1)} traveler(s)** · **{req.get('budgetLevel','budget')}**", "", "| Metric | Current | Candidate |", "|---|---:|---:|"]
+    rows=[("Cheapest flight",a["flight"],b["flight"]),("Cheapest hotel/night",a["hotel"],b["hotel"]),("Live flight options",a["flights"],b["flights"]),("Live hotel options",a["hotels"],b["hotels"]),("Verified attractions",a["attractions"],b["attractions"]),("Restaurants",a["restaurants"],b["restaurants"])]
+    for label,x,y in rows:
         xv=money(x) if x is not None and "price" in label.lower() else ("—" if x is None else str(x)); yv=money(y) if y is not None and "price" in label.lower() else ("—" if y is None else str(y)); lines.append(f"| {label} | {xv} | {yv} |")
-    lines += ["","### Recommendation",""]
-    if a["subtotal"] is not None and b["subtotal"] is not None: lines.append(f"**Lower live flight + hotel subtotal:** {a['destination'] if a['subtotal']<b['subtotal'] else b['destination']}.")
-    if a["attractions"]!=b["attractions"]: lines.append(f"**More verified attractions returned:** {a['destination'] if a['attractions']>b['attractions'] else b['destination']}.")
-    lines.append("Your current trip context is preserved; this comparison does not replace the active trip.")
+    if a["subtotal"] is not None and b["subtotal"] is not None:
+        winner=a["destination"] if a["subtotal"]<b["subtotal"] else b["destination"]
+        lines += ["", f"### 💡 Budget winner", f"**{winner}** has the lower live flight + hotel subtotal for this trip."]
+    if a["attractions"] != b["attractions"]:
+        winner=a["destination"] if a["attractions"]>b["attractions"] else b["destination"]
+        lines.append(f"**{winner}** has more verified attractions returned by the live places service.")
+    lines += ["", "_This comparison does not replace your active trip context._"]
     return "\n".join(lines)
 
 
+async def call_bundle(session, args):
+    result = await session.call_tool("build_trip_data", arguments=args)
+    return json.loads(result.content[0].text)
+
+
 async def run_turn(user_message, placeholder):
-    async with AsyncExitStack() as stack:
+    # 1) Resolve the turn without a network call whenever possible.
+    action, req = parse_user_message_locally(user_message, st.session_state.trip_context)
+    if action is None:
         placeholder.info("⚡ Fast router…")
+        try:
+            action, req = await asyncio.wait_for(llm_route_fallback(user_message, st.session_state.trip_context), timeout=12)
+        except Exception as exc:
+            # Do not expose asyncio TaskGroup internals to the user. Preserve context
+            # and ask for the one missing piece instead.
+            placeholder.empty()
+            if st.session_state.trip_context:
+                return "## 🧭 I still have your active trip context.\n\nTell me what you want to change or compare (for example: **compare with Coimbatore**, **change destination to Coimbatore**, **cheapest hotel**)."
+            return f"## 🧭 I couldn't parse that quickly.\n\nPlease provide origin, destination, departure date and return date."
+
+    if action == "REUSE":
+        trip = st.session_state.trip_context
+        if not trip:
+            placeholder.empty(); return "## 🧭 No active trip yet\n\nStart with a complete trip request."
+        lower = user_message.lower()
+        hotels = as_list(trip.get("services",{}).get("hotels")); flights = as_list(trip.get("services",{}).get("flights"))
+        if "cheapest hotel" in lower and hotels:
+            priced=[h for h in hotels if isinstance(h.get("price"),(int,float))]
+            if priced:
+                h=min(priced,key=lambda x:x["price"]); placeholder.empty(); return f"### 🏨 Cheapest hotel\n\n**{h.get('name')}** — {money(h.get('price'),h.get('currency','USD'))}/night."
+        if "cheapest flight" in lower and flights:
+            priced=[f for f in flights if isinstance(f.get("price"),(int,float))]
+            if priced:
+                f=min(priced,key=lambda x:x["price"]); placeholder.empty(); return f"### 🛫 Cheapest flight\n\n**{f.get('airline')}** — {money(f.get('price'),f.get('currency','USD'))}, {f.get('duration','—')}, {f.get('departure','—')} → {f.get('arrival','—')}."
+        placeholder.empty(); return render_trip(trip)
+
+    if action == "ASK" or not req:
+        placeholder.empty(); return "## 🧭 I need a little more information\n\nPlease provide the origin, destination, departure date and return date. Your saved trip context will be preserved on follow-ups."
+
+    start,end=iso_date(req.get("departDate")),iso_date(req.get("returnDate")); today=date.today()
+    if not req.get("origin") or not req.get("destinationCity") or not start or not end:
+        placeholder.empty(); return "## ⚠️ Missing trip details\n\nI need the origin, destination, departure date and return date. I will keep the rest of your saved context."
+    if start<today:
+        placeholder.empty(); return f"## ⚠️ Past travel date\n\n{req.get('departDate')} is in the past. Today is {today.isoformat()}."
+    if end<=start:
+        placeholder.empty(); return "## ⚠️ Invalid dates\n\nReturn date must be after departure date."
+
+    placeholder.info("⚡ Fetching live services in parallel…")
+    async with AsyncExitStack() as stack:
         transport=await stack.enter_async_context(sse_client(server_url))
         session=await stack.enter_async_context(ClientSession(transport[0],transport[1]))
-        action=await route_request(user_message,st.session_state.trip_context); act=str(action.get("action","ASK")).upper(); base=current_request(); req=normalize_request(action.get("request") or {},base)
+        candidate=await asyncio.wait_for(call_bundle(session,req),timeout=16)
 
-        if act=="REUSE":
-            if not st.session_state.trip_context: placeholder.empty(); return "## 🧭 No active trip yet\n\nStart with a complete trip request."
-            lower=user_message.lower(); trip=st.session_state.trip_context
-            if "cheapest hotel" in lower:
-                hotels=as_list(trip.get("services",{}).get("hotels")); priced=[h for h in hotels if isinstance(h.get("price"),(int,float))]
-                if priced:
-                    h=min(priced,key=lambda x:x["price"]); placeholder.empty(); return f"### 🏨 Cheapest hotel\n\n**{h.get('name')}** — {money(h.get('price'),h.get('currency','USD'))}/night."
-            if "cheapest flight" in lower:
-                flights=as_list(trip.get("services",{}).get("flights")); priced=[f for f in flights if isinstance(f.get("price"),(int,float))]
-                if priced:
-                    f=min(priced,key=lambda x:x["price"]); placeholder.empty(); return f"### 🛫 Cheapest flight\n\n**{f.get('airline')}** — {money(f.get('price'),f.get('currency','USD'))}, {f.get('duration','—')}, {f.get('departure','—')} → {f.get('arrival','—')}."
-            placeholder.empty(); return render_trip(trip)
+    if candidate.get("planningBlocked"):
+        placeholder.empty(); return f"## ⚠️ Trip cannot be planned\n\n{candidate.get('error','Unknown error')}"
 
-        if act=="ASK":
-            placeholder.empty(); return "## 🧭 I need a little more information\n\nPlease provide the origin, destination, departure date and return date. Existing trip context will be preserved on follow-ups."
+    if action=="COMPARE" and st.session_state.trip_context:
+        placeholder.empty(); return render_comparison(st.session_state.trip_context,candidate)
 
-        start,end=iso_date(req.get("departDate")),iso_date(req.get("returnDate")); today=date.today()
-        if not req.get("destinationCity") or not start or not end:
-            placeholder.empty(); return "## ⚠️ Missing trip details\n\nI could not resolve a destination or valid dates from this turn and the saved context."
-        if start<today: placeholder.empty(); return f"## ⚠️ Past travel date\n\n{req['departDate']} is in the past. Today is {today.isoformat()}."
-        if end<=start: placeholder.empty(); return "## ⚠️ Invalid dates\n\nReturn date must be after departure date."
-
-        placeholder.info("⚡ Fetching live services in parallel…")
-        candidate=await call_bundle(session,req)
-        if candidate.get("planningBlocked"):
-            placeholder.empty(); return f"## ⚠️ Trip cannot be planned\n\n{candidate.get('error','Unknown error')}"
-
-        if act=="COMPARE" and st.session_state.trip_context:
-            placeholder.empty(); return render_comparison(st.session_state.trip_context,candidate)
-
-        st.session_state.trip_context=candidate
-        placeholder.empty(); return render_trip(candidate)
+    st.session_state.trip_context=candidate
+    placeholder.empty(); return render_trip(candidate)
 
 
 for message in st.session_state.messages:
@@ -324,6 +397,9 @@ if prompt:=st.chat_input("Try: Chennai → Madurai, Aug 20–25, 1 traveler"):
     st.session_state.messages.append({"role":"user","content":prompt})
     with st.chat_message("user"): st.markdown(prompt)
     with st.chat_message("assistant"):
-        try: response=asyncio.run(run_turn(prompt,st.empty()))
-        except Exception as exc: response=f"## ❌ Something went wrong\n\n`{exc}`"
-        st.markdown(response); st.session_state.messages.append({"role":"assistant","content":response})
+        try:
+            response=asyncio.run(run_turn(prompt,st.empty()))
+        except Exception as exc:
+            response="## ❌ Something went wrong\n\nThe live trip request failed. Please try the same request again."
+        st.markdown(response)
+        st.session_state.messages.append({"role":"assistant","content":response})
