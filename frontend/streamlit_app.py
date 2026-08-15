@@ -93,9 +93,11 @@ def create_pydantic_model_from_schema(name: str, schema: Dict[str, Any]):
 def as_list(value): return value if isinstance(value, list) else []
 def as_dict(value): return value if isinstance(value, dict) else {}
 
+
 def parse_iso_date(value):
     try: return datetime.strptime(str(value), "%Y-%m-%d").date()
     except Exception: return None
+
 
 def money(value, currency="USD"):
     try: return f"{currency} {float(value):,.2f}"
@@ -104,8 +106,8 @@ def money(value, currency="USD"):
 
 def clean_attractions(items):
     name_deny = re.compile(r"\b(road|street|highway|lane|path|junction|roundabout|bus\s*stop|bus\s*station|railway|parking|signal|flyover|underpass|bypass|overpass|salai|theru|sandhu|mawatha|marg|nagar|colony|layout|township|extension|ward|sector|block|circle|chowk|hospital)\b", re.I)
-    category_deny = ("administrative","populated_place","residential","postcode","suburb","neighbourhood","neighborhood","locality","commercial.building","office","hospital")
-    out, seen = [], set()
+    category_deny = ("administrative", "populated_place", "residential", "postcode", "suburb", "neighbourhood", "neighborhood", "locality", "commercial.building", "office", "hospital")
+    output, seen = [], set()
     for item in as_list(items):
         if not isinstance(item, dict): continue
         name = str(item.get("name", "")).strip()
@@ -114,14 +116,15 @@ def clean_attractions(items):
         if key in seen or name_deny.search(name): continue
         categories = [str(x).lower() for x in item.get("categories", [])]
         if any(any(bad in c for bad in category_deny) for c in categories): continue
-        if not any(c.startswith("tourism.") or "museum" in c or "culture" in c or "place_of_worship" in c or "historic" in c or c.startswith("natural") or "park" in c or "heritage" in c for c in categories): continue
-        seen.add(key); out.append(item)
-    return out
+        allowed = any(c.startswith("tourism.") or "museum" in c or "culture" in c or "place_of_worship" in c or "historic" in c or c.startswith("natural") or "park" in c or "heritage" in c for c in categories)
+        if not allowed: continue
+        seen.add(key); output.append(item)
+    return output
 
 
 def clean_restaurants(items):
     name_deny = re.compile(r"\b(street|road|lane|mawatha|marg|salai|theru|sandhu|highway|junction|bus\s*stop|station|nagar|colony)\b", re.I)
-    out, seen = [], set()
+    output, seen = [], set()
     for item in as_list(items):
         if not isinstance(item, dict): continue
         name = str(item.get("name", "")).strip()
@@ -130,8 +133,8 @@ def clean_restaurants(items):
         if key in seen: continue
         categories = [str(x).lower() for x in item.get("categories", [])]
         if not any(c.startswith("catering.") for c in categories): continue
-        seen.add(key); out.append(item)
-    return out
+        seen.add(key); output.append(item)
+    return output
 
 
 def extract_json(text: str):
@@ -150,106 +153,158 @@ def build_planner_payload(trip, user_request):
     return {
         "user_request": user_request,
         "trip": {
-            "origin": request.get("origin"), "destination_city": request.get("destinationCity"),
-            "destination_country": request.get("destinationCountry"), "departure_date": request.get("departDate"),
-            "return_date": request.get("returnDate"), "travelers": request.get("travelers"),
-            "nights": request.get("durationNights"), "budget_level": request.get("budgetLevel")
+            "origin": request.get("origin"),
+            "destination_city": request.get("destinationCity"),
+            "destination_country": request.get("destinationCountry"),
+            "departure_date": request.get("departDate"),
+            "return_date": request.get("returnDate"),
+            "travelers": request.get("travelers"),
+            "nights": request.get("durationNights"),
+            "budget_level": request.get("budgetLevel"),
         },
-        "verified_attractions": [{"id": i, "name": x.get("name"), "description": x.get("description"), "address": x.get("address"), "categories": x.get("categories", [])} for i, x in enumerate(attractions[:16])],
-        "verified_restaurants": [{"id": i, "name": x.get("name"), "description": x.get("description"), "address": x.get("address"), "categories": x.get("categories", [])} for i, x in enumerate(restaurants[:12])],
-        "live_flights": [{"airline": f.get("airline"), "price": f.get("price"), "currency": f.get("currency"), "departure": f.get("departure"), "arrival": f.get("arrival"), "duration": f.get("duration"), "stops": f.get("stops")} for f in as_list(services.get("flights"))[:8]],
-        "live_hotels": [{"name": h.get("name"), "price": h.get("price"), "currency": h.get("currency"), "rating": h.get("rating"), "reviews": h.get("reviews"), "address": h.get("address")} for h in as_list(services.get("hotels"))[:8]],
-        "weather": as_dict(services.get("weather")), "budget": as_dict(services.get("budget"))
+        "verified_attractions": [
+            {"id": i, "name": x.get("name"), "description": x.get("description"), "address": x.get("address"), "categories": x.get("categories", [])}
+            for i, x in enumerate(attractions[:16])
+        ],
+        "verified_restaurants": [
+            {"id": i, "name": x.get("name"), "description": x.get("description"), "address": x.get("address"), "categories": x.get("categories", [])}
+            for i, x in enumerate(restaurants[:12])
+        ],
+        "live_flights": [
+            {"airline": f.get("airline"), "price": f.get("price"), "currency": f.get("currency"), "departure": f.get("departure"), "arrival": f.get("arrival"), "duration": f.get("duration"), "stops": f.get("stops")}
+            for f in as_list(services.get("flights"))[:8]
+        ],
+        "live_hotels": [
+            {"name": h.get("name"), "price": h.get("price"), "currency": h.get("currency"), "rating": h.get("rating"), "reviews": h.get("reviews"), "address": h.get("address")}
+            for h in as_list(services.get("hotels"))[:8]
+        ],
+        "weather": as_dict(services.get("weather")),
+        "budget": as_dict(services.get("budget")),
     }
 
 
 def validate_plan(plan, attractions, restaurants, start, end):
     if not isinstance(plan, dict) or not isinstance(plan.get("days"), list): raise ValueError("Invalid planner JSON")
-    valid_dates = set(); cur = start
-    while cur <= end: valid_dates.add(cur.isoformat()); cur += timedelta(days=1)
-    seen, normalized = set(), []
+    valid_dates = set()
+    cur = start
+    while cur <= end:
+        valid_dates.add(cur.isoformat()); cur += timedelta(days=1)
+    seen = set(); normalized = []
     for day in plan["days"]:
         if not isinstance(day, dict) or day.get("date") not in valid_dates: continue
-        ids=[]
+        ids = []
         for raw in (day.get("attraction_ids") or [])[:2]:
-            try: idx=int(raw)
-            except (TypeError,ValueError): continue
-            if 0 <= idx < len(attractions) and idx not in seen: ids.append(idx); seen.add(idx)
-        rid=day.get("restaurant_id")
-        try: rid=int(rid) if rid is not None else None
-        except (TypeError,ValueError): rid=None
-        if rid is not None and not (0 <= rid < len(restaurants)): rid=None
-        normalized.append({"date":day["date"],"title":str(day.get("title") or "Travel day").strip(),"attraction_ids":ids,"restaurant_id":rid,"reason":str(day.get("reason") or "").strip()})
-    normalized.sort(key=lambda x:x["date"])
-    return {"days":normalized}
+            try: idx = int(raw)
+            except (TypeError, ValueError): continue
+            if 0 <= idx < len(attractions) and idx not in seen:
+                ids.append(idx); seen.add(idx)
+        rid = day.get("restaurant_id")
+        try: rid = int(rid) if rid is not None else None
+        except (TypeError, ValueError): rid = None
+        if rid is not None and not (0 <= rid < len(restaurants)): rid = None
+        normalized.append({
+            "date": day["date"],
+            "title": str(day.get("title") or "Travel day").strip(),
+            "attraction_ids": ids,
+            "restaurant_id": rid,
+            "reason": str(day.get("reason") or "").strip(),
+        })
+    normalized.sort(key=lambda x: x["date"])
+    return {"days": normalized}
 
 
 def fallback_plan(attractions, restaurants, start, end):
-    days=[]; cur=start; ai=0; ri=0
+    days, cur, ai, ri = [], start, 0, 0
     while cur <= end:
-        first,last=cur==start,cur==end
-        selected=[] if first or last else ([ai] if ai<len(attractions) else [])
-        if selected: ai+=1
-        days.append({"date":cur.isoformat(),"title":"Arrival" if first else ("Departure" if last else "Sightseeing"),"attraction_ids":selected,"restaurant_id":ri if restaurants else None,"reason":"Safe fallback using only verified live POIs."})
-        if restaurants: ri=(ri+1)%len(restaurants)
+        is_first, is_last = cur == start, cur == end
+        selected = [] if is_first or is_last else ([ai] if ai < len(attractions) else [])
+        if selected: ai += 1
+        days.append({"date": cur.isoformat(), "title": "Arrival" if is_first else ("Departure" if is_last else "Sightseeing"), "attraction_ids": selected, "restaurant_id": ri if restaurants else None, "reason": "Safe fallback using only verified live POIs."})
+        if restaurants: ri = (ri + 1) % len(restaurants)
         cur += timedelta(days=1)
-    return {"days":days}
+    return {"days": days}
 
 
 def render_trip(trip, plan):
-    request, services, live = trip.get("request",{}), trip.get("services",{}), trip.get("liveDataSummary",{})
-    origin, city, country = request.get("origin",""), request.get("destinationCity",""), request.get("destinationCountry","")
-    depart, return_date = str(request.get("departDate","")), str(request.get("returnDate",""))
-    travelers, nights = request.get("travelers",1), int(request.get("durationNights") or 0)
-    days = int(request.get("calendarDays") or nights+1)
+    request, services, live = trip.get("request", {}), trip.get("services", {}), trip.get("liveDataSummary", {})
+    origin, city, country = request.get("origin", ""), request.get("destinationCity", ""), request.get("destinationCountry", "")
+    depart, return_date = str(request.get("departDate", "")), str(request.get("returnDate", ""))
+    travelers, nights = request.get("travelers", 1), int(request.get("durationNights") or 0)
+    days = int(request.get("calendarDays") or nights + 1)
     flights, hotels = as_list(services.get("flights")), as_list(services.get("hotels"))
     attractions, restaurants = clean_attractions(services.get("attractions")), clean_restaurants(services.get("restaurants"))
     weather, budget = as_dict(services.get("weather")), as_dict(services.get("budget"))
-    lines=["## ✈️ Trip at a glance\n",f"**{origin} → {city}, {country}**  ",f"**{depart} → {return_date} · {travelers} traveler(s) · {nights} night(s) / {days} calendar day(s)**  ",f"Budget level: **{request.get('budgetLevel','budget')}**\n"]
+
+    lines = ["## ✈️ Trip at a glance\n", f"**{origin} → {city}, {country}**  ", f"**{depart} → {return_date} · {travelers} traveler(s) · {nights} night(s) / {days} calendar day(s)**  ", f"Budget level: **{request.get('budgetLevel', 'budget')}**\n"]
+
     lines += ["## 🛫 Flights\n"]
     if flights:
         lines.append("| Airline | Price | Departure | Arrival | Duration | Stops |\n|---|---:|---|---|---:|---:|")
         for f in flights[:5]:
-            stops=int(f.get("stops",0) or 0); lines.append(f"| {f.get('airline','Unknown')} | {money(f.get('price'),f.get('currency','USD'))} | {f.get('departure','—')} | {f.get('arrival','—')} | {f.get('duration','—')} | {'Non-stop' if stops==0 else str(stops)+' stop(s)'} |")
-        lines.append("\n*Live provider results; prices and availability can change.*\n")
-    else: lines.append(f"**Live flights unavailable.** {as_dict(services.get('flights')).get('error','No live flight options were returned.')}\n")
+            stops = int(f.get("stops", 0) or 0)
+            lines.append(f"| {f.get('airline', 'Unknown')} | {money(f.get('price'), f.get('currency', 'USD'))} | {f.get('departure', '—')} | {f.get('arrival', '—')} | {f.get('duration', '—')} | {'Non-stop' if stops == 0 else f'{stops} stop(s)'} |")
+        lines.append("\n*Live provider results for this search; prices and availability can change.*\n")
+    else:
+        lines.append(f"**Live flights unavailable.** {as_dict(services.get('flights')).get('error', 'No live flight options were returned.')}\n")
+
     lines += ["## 🏨 Hotels\n"]
     if hotels:
         lines.append("| Hotel | Nightly | Rating | Reviews |\n|---|---:|---:|---:|")
         for h in hotels[:6]:
-            rating=f"{float(h['rating']):.1f}" if isinstance(h.get('rating'),(int,float)) else "—"; lines.append(f"| {h.get('name','Unknown')} | {money(h.get('price'),h.get('currency','USD'))} | {rating} | {h.get('reviews','—')} |")
-        lines.append("")
-    else: lines.append(f"**Live hotels unavailable.** {as_dict(services.get('hotels')).get('error','No live hotel options were returned.')}\n")
+            rating = f"{float(h['rating']):.1f}" if isinstance(h.get("rating"), (int, float)) else "—"
+            lines.append(f"| {h.get('name', 'Unknown')} | {money(h.get('price'), h.get('currency', 'USD'))} | {rating} | {h.get('reviews', '—')} |")
+        lines.append(f"\n*Live hotel rates returned for {depart} → {return_date}.*\n")
+    else:
+        lines.append(f"**Live hotels unavailable.** {as_dict(services.get('hotels')).get('error', 'No live hotel options were returned.')}\n")
+
     lines += ["## 📍 Things to do\n"]
-    used=[]
-    for d in plan.get("days",[]): used.extend(d.get("attraction_ids",[]))
-    if used:
+    if attractions:
+        used = []
+        for d in plan.get("days", []): used.extend(d.get("attraction_ids", []))
         for idx in dict.fromkeys(used):
-            if 0<=idx<len(attractions): lines.append(f"- **{attractions[idx].get('name')}**" + (f" — {attractions[idx].get('description')}" if attractions[idx].get('description') else ""))
-    else: lines.append("No strong live tourist attractions were selected.")
+            if 0 <= idx < len(attractions):
+                p = attractions[idx]
+                lines.append(f"- **{p.get('name')}**" + (f" — {p.get('description')}" if p.get("description") else ""))
+        if not used: lines.append("No attractions were selected by the itinerary planner from the verified results.")
+    else:
+        lines.append("No high-quality live tourist attractions were returned. I won't pad the itinerary with roads, stations, or random map objects.")
     lines.append("")
+
     lines += ["## 🍽️ Food picks\n"]
     if restaurants:
-        for r in restaurants[:8]: lines.append(f"- **{r.get('name')}**" + (f" — {r.get('description')}" if r.get('description') else ""))
+        for r in restaurants[:8]: lines.append(f"- **{r.get('name')}**" + (f" — {r.get('description')}" if r.get("description") else ""))
         lines.append("\n*Recommendations only; no reservation is implied.*\n")
-    else: lines.append("No verified restaurant results were returned.\n")
+    else:
+        lines.append("No verified restaurant results were returned.\n")
+
     lines += ["## 🌦️ Weather\n"]
-    rows=as_list(weather.get("results"))
-    if rows:
+    weather_rows = as_list(weather.get("results"))
+    if weather_rows:
         lines.append("| Date | Temp | Feels like | Conditions | Humidity | Rain |\n|---|---:|---:|---|---:|---:|")
-        for w in rows: lines.append(f"| {w.get('date','—')} | {w.get('temperature','—')}°C | {w.get('feelsLike','—')}°C | {w.get('description','—')} | {w.get('humidity','—')}% | {w.get('precipitationProbability','—')}% |")
-        c=weather.get("coverage",{});
-        if c: lines.append(f"\n*Live forecast coverage: **{c.get('returnedStart')} → {c.get('returnedEnd')}**. No extrapolation beyond provider coverage.*")
-    else: lines.append(f"**Live weather unavailable.** {weather.get('error','No forecast data was returned for the requested dates.')}")
-    lines.append("")
+        for w in weather_rows: lines.append(f"| {w.get('date', '—')} | {w.get('temperature', '—')}°C | {w.get('feelsLike', '—')}°C | {w.get('description', '—')} | {w.get('humidity', '—')}% | {w.get('precipitationProbability', '—')}% |")
+        c = weather.get("coverage", {})
+        if c: lines.append(f"\n*Live forecast coverage: **{c.get('returnedStart')} → {c.get('returnedEnd')}**. No weather is extrapolated beyond the provider's returned dates.*\n")
+    else:
+        lines.append(f"**Live weather unavailable.** {weather.get('error', 'No forecast data was returned for the requested dates.')}\n")
+
     lines += ["## 💰 Budget\n"]
     if budget:
-        cur=budget.get("currency","USD"); br=budget.get("breakdown",{}); lines.append(f"**Generic estimate:** {money(budget.get('total_budget'),cur)}"); lines.append(f"- Flights estimate: {money(br.get('flights_estimate'),cur)}"); lines.append(f"- Accommodation estimate: {money(br.get('accommodation_estimate'),cur)}"); lines.append(f"- Daily expenses estimate: {money(br.get('daily_expenses_estimate'),cur)}"); lines.append("\n*Generic planning estimate only — not a live booking total.*")
-    if live.get("complete"): lines.append(f"\n**Cheapest live-data subtotal:** {money(live.get('cheapestLiveSubtotal'),live.get('currency','USD'))}\nIncludes cheapest returned flight + cheapest returned hotel nightly rate × nights; excludes food, local transport, activities and provider fees/taxes not included.")
-    else: lines.append("\n**Live-data subtotal:** incomplete because a usable live flight or hotel price was missing.")
+        cur = budget.get("currency", "USD"); br = budget.get("breakdown", {})
+        lines.append(f"**Generic estimate:** {money(budget.get('total_budget'), cur)}")
+        lines.append(f"- Flights estimate: {money(br.get('flights_estimate'), cur)}")
+        lines.append(f"- Accommodation estimate: {money(br.get('accommodation_estimate'), cur)}")
+        lines.append(f"- Daily expenses estimate: {money(br.get('daily_expenses_estimate'), cur)}")
+        lines.append("\n*Generic planning estimate only — not a live booking total.*")
+    if live.get("complete"):
+        lines.append(f"\n**Cheapest live-data subtotal:** {money(live.get('cheapestLiveSubtotal'), live.get('currency', 'USD'))}")
+        lines.append("Includes the cheapest returned live flight offer + cheapest returned hotel nightly rate × nights. It excludes food, local transport, activities, and provider taxes/fees not included in returned prices.")
+    else:
+        lines.append("\n**Live-data subtotal:** incomplete because a usable live flight or hotel price was missing.")
     lines.append("")
+
     lines += ["## 🗓️ Suggested itinerary\n"]
-    if not plan.get("days"): lines.append("I don't have enough verified attraction data to create a responsible day-by-day itinerary without inventing places.")
+    if not plan.get("days"):
+        lines.append("I don't have enough verified attraction data to create a responsible day-by-day itinerary without inventing places.")
     else:
         for i,d in enumerate(plan["days"],1):
             lines.append(f"### Day {i} · {d.get('date')} · {d.get('title')}")
@@ -307,7 +362,17 @@ async def run_agent(chat_history,trip_data,chat_container):
                 async def call_mcp_tool(tool_name=tool.name,**kwargs): return await session.call_tool(tool_name,arguments=kwargs)
                 tools.append(StructuredTool.from_function(func=None,coroutine=call_mcp_tool,name=tool.name,description=tool.description or "Travel MCP tool",args_schema=create_pydantic_model_from_schema(tool.name,tool.input_schema)))
 
-            llm=ChatNVIDIA(model="meta/llama-3.3-70b-instruct",api_key=os.environ["NVIDIA_API_KEY"],temperature=0.2,top_p=0.7,max_tokens=2048)
+            # NVIDIA's ChatNVIDIA client supports `timeout` as a transport
+            # option. A 70B hosted inference request can take longer than the
+            # default polling/read timeout, especially during tool-calling.
+            llm=ChatNVIDIA(
+                model="meta/llama-3.3-70b-instruct",
+                api_key=os.environ["NVIDIA_API_KEY"],
+                temperature=0.2,
+                top_p=0.7,
+                max_completion_tokens=1024,
+                timeout=300,
+            )
             latest_user=next((m["content"] for m in reversed(chat_history) if m["role"]=="user"),""); last_answer=next((m["content"] for m in reversed(chat_history) if m["role"]=="assistant"),""); fresh=await needs_fresh_tool_data(latest_user,trip_data,last_answer)
 
             if fresh:
