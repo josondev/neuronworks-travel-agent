@@ -1,62 +1,89 @@
 import axios from 'axios';
 import dotenv from 'dotenv';
-
 dotenv.config();
 
 export class FlightService {
     constructor() {
-        this.apiKey = process.env.SERPAPI_API_KEY || '';
+        // Support both names so Render deployments using either convention work.
+        this.apiKey = process.env.SERPAPI_API_KEY || process.env.SERPAPI_KEY || '';
         this.baseUrl = 'https://serpapi.com/search.json';
 
         if (!this.apiKey) {
-            console.warn('⚠️ SERPAPI_API_KEY is not configured. Flight search will return no results.');
+            console.warn('⚠️ FlightService: SERPAPI_API_KEY/SERPAPI_KEY is not configured.');
         }
     }
 
-    async searchFlights(params) {
+    async searchFlights(params = {}) {
         if (!this.apiKey) {
-            console.error('❌ Flight search unavailable: SERPAPI_API_KEY is missing.');
-            return [];
+            return {
+                error: 'Flight search unavailable: SERPAPI_API_KEY (or SERPAPI_KEY) is not configured on the server.',
+                results: []
+            };
+        }
+
+        const origin = String(params.origin || '').trim().toUpperCase();
+        const destination = String(params.destination || '').trim().toUpperCase();
+        const departDate = String(params.departDate || '').trim();
+        const returnDate = params.returnDate ? String(params.returnDate).trim() : '';
+        const passengers = Math.max(1, Number(params.passengers) || 1);
+
+        if (!origin || !destination || !/^\d{4}-\d{2}-\d{2}$/.test(departDate)) {
+            return { error: 'Flight search requires origin/destination IATA codes and departDate in YYYY-MM-DD format.', results: [] };
         }
 
         try {
             const requestParams = {
                 engine: 'google_flights',
                 api_key: this.apiKey,
-                departure_id: String(params.origin || '').toUpperCase(),
-                arrival_id: String(params.destination || '').toUpperCase(),
-                outbound_date: params.departDate,
-                type: params.returnDate ? 1 : 2,
-                adults: Math.max(1, Number(params.passengers) || 1),
+                departure_id: origin,
+                arrival_id: destination,
+                outbound_date: departDate,
+                type: returnDate ? 1 : 2,
+                adults: passengers,
                 travel_class: 1,
                 sort_by: 2,
                 currency: 'USD',
-                gl: 'us',
+                gl: 'in',
                 hl: 'en'
             };
 
-            if (params.returnDate) requestParams.return_date = params.returnDate;
+            if (returnDate) requestParams.return_date = returnDate;
 
             const response = await axios.get(this.baseUrl, {
                 params: requestParams,
                 timeout: 30000
             });
 
-            if (response.data?.error) throw new Error(response.data.error);
-            return this.transformSerpApiResponse(response.data);
+            if (response.data?.error) {
+                throw new Error(response.data.error);
+            }
+
+            const flights = this.transformSerpApiResponse(response.data);
+
+            if (!flights.length) {
+                return {
+                    error: `No live Google Flights results were returned for ${origin} → ${destination} on ${departDate}${returnDate ? ` to ${returnDate}` : ''}.`,
+                    results: [],
+                    searchLink: response.data?.search_metadata?.google_flights_url || null,
+                    source: 'Google Flights via SerpApi'
+                };
+            }
+
+            return flights;
         } catch (error) {
-            console.error(
-                '❌ Google Flights / SerpApi error:',
-                error.response?.data || error.message
-            );
-            return [];
+            const providerError = error.response?.data?.error || error.response?.data?.message || error.message;
+            console.error('❌ Google Flights / SerpApi error:', error.response?.data || error.message);
+            return {
+                error: `Live flight search failed: ${providerError}`,
+                results: []
+            };
         }
     }
 
-    transformSerpApiResponse(data) {
+    transformSerpApiResponse(data = {}) {
         const rawFlights = [
-            ...(data.best_flights || []),
-            ...(data.other_flights || [])
+            ...(Array.isArray(data.best_flights) ? data.best_flights : []),
+            ...(Array.isArray(data.other_flights) ? data.other_flights : [])
         ];
 
         const uniqueFlights = new Map();
@@ -83,13 +110,7 @@ export class FlightService {
                 ? `${Math.floor(durationMinutes / 60)}h ${durationMinutes % 60}m`
                 : 'Unknown';
 
-            const key = [
-                airlines.join(','),
-                firstSegment.flight_number || '',
-                departure,
-                arrival,
-                price
-            ].join('|');
+            const key = [airlines.join(','), firstSegment.flight_number || '', departure, arrival, price].join('|');
 
             if (!uniqueFlights.has(key)) {
                 uniqueFlights.set(key, {
