@@ -11,7 +11,6 @@ export class PlacesService {
         if (!this.apiKey || this.apiKey === 'test_key_replace_later') {
             return { error: 'Live places search unavailable: GEOAPIFY_API_KEY is not configured.', results: [] };
         }
-
         if (!location || typeof location !== 'string') {
             return { error: 'A location is required.', results: [] };
         }
@@ -21,16 +20,10 @@ export class PlacesService {
                 params: { text: location, apiKey: this.apiKey, limit: 1 },
                 timeout: 15000
             });
+            const feature = geoResponse.data?.features?.[0];
+            if (!feature) return { error: `Location "${location}" not found.`, results: [] };
 
-            const features = geoResponse.data?.features || [];
-            if (!features.length) {
-                return { error: `Location "${location}" not found.`, results: [] };
-            }
-
-            const props = features[0].properties || {};
-            const lon = props.lon;
-            const lat = props.lat;
-
+            const { lon, lat } = feature.properties || {};
             const placesResponse = await axios.get(this.placesUrl, {
                 params: {
                     categories: this.getCategoryKinds(category),
@@ -45,44 +38,41 @@ export class PlacesService {
 
             const raw = [];
             for (const item of placesResponse.data?.features || []) {
-                const place = item.properties || {};
-                const name = String(place.name || place.address_line1 || '').trim();
+                const p = item.properties || {};
+                // Do not substitute an address/road name as the place's name.
+                const name = String(p.name || '').trim();
                 if (!name) continue;
-
-                const categories = Array.isArray(place.categories) ? place.categories : [];
-                const categoryText = categories.join(',');
+                const categories = Array.isArray(p.categories) ? p.categories : [];
                 raw.push({
                     name,
-                    description: place.description || place.formatted || null,
-                    address: place.formatted || place.address_line2 || null,
-                    coordinates: { lat: place.lat, lon: place.lon },
-                    distanceMeters: place.distance ?? null,
+                    description: p.description || null,
+                    address: p.formatted || p.address_line2 || null,
+                    coordinates: { lat: p.lat, lon: p.lon },
+                    distanceMeters: Number.isFinite(p.distance) ? p.distance : null,
                     categories,
-                    kinds: categoryText
+                    kinds: categories.join(',')
                 });
             }
 
-            return this.rankAndFilter(raw, category).slice(0, category === 'tourist_attractions' ? 12 : 12);
+            return this.rankAndFilter(raw, category).slice(0, 8);
         } catch (error) {
             console.error('❌ Places API Error:', error.response?.data || error.message);
             return { error: `Live places search failed: ${error.message}`, results: [] };
         }
     }
 
-    async getAttractions(city, limit = 10, radius = 10000) {
+    async getAttractions(city, limit = 8, radius = 10000) {
         const result = await this.searchPlaces(city, 'tourist_attractions', radius);
         return Array.isArray(result) ? result.slice(0, limit) : result;
     }
 
-    async getRestaurants(location, limit = 10) {
+    async getRestaurants(location, limit = 8) {
         const result = await this.searchPlaces(location, 'restaurants', 5000);
         return Array.isArray(result) ? result.slice(0, limit) : result;
     }
 
     getCategoryKinds(category) {
-        const categoryMap = {
-            // Broad 'tourism' results were returning roads and miscellaneous infrastructure.
-            // These more specific Geoapify categories are intended for actual tourist POIs.
+        const map = {
             tourist_attractions: [
                 'tourism.attraction',
                 'tourism.sights',
@@ -91,75 +81,80 @@ export class PlacesService {
                 'leisure.park',
                 'natural'
             ].join(','),
-            restaurants: 'catering.restaurant,catering.cafe',
+            restaurants: 'catering.restaurant,catering.cafe,catering.fast_food',
             hotels: 'accommodation.hotel,accommodation.guest_house',
             entertainment: 'entertainment',
             nature: 'natural,leisure.park,leisure.park.garden',
-            shopping: 'commercial.shopping_mall,commercial.marketplace,commercial.supermarket',
-            religion: 'tourism.sights.place_of_worship,building.place_of_worship'
+            shopping: 'commercial.shopping_mall,commercial.marketplace',
+            religion: 'building.place_of_worship,tourism.sights.place_of_worship'
         };
-        return categoryMap[category || 'tourist_attractions'] || 'tourism.attraction,tourism.sights';
+        return map[category || 'tourist_attractions'] || map.tourist_attractions;
     }
 
     rankAndFilter(places, category) {
-        const bannedForAttractions = [
-            'road',
-            'street',
-            'main road',
-            'highway',
-            'junction',
-            'bus stop',
-            'bus station',
-            'railway',
-            'station',
-            'parking',
-            'roundabout',
-            'signal',
-            'traffic'
-        ];
+        const infrastructure = /(road|street|highway|lane|path|way|junction|roundabout|signal|bus stop|bus station|railway|station|parking|building|mawatha)$/i;
+        const weakAttraction = /(statue|viewpoint|triangle|building|road|street|path|train)/i;
+        const restaurantNameProblem = /(street|road|lane|mawatha|marg|highway|junction|bus stop|station)$/i;
 
-        const scored = places
-            .filter((place) => {
-                if (category !== 'tourist_attractions') return true;
-                const text = `${place.name} ${place.description || ''} ${place.kinds || ''}`.toLowerCase();
-                // Exclude infrastructure unless it is explicitly tagged as a tourism sight.
-                const hasTourismTag = place.categories.some(c => c.startsWith('tourism.'));
-                if (!hasTourismTag && bannedForAttractions.some(term => text.includes(term))) return false;
+        const filtered = places.filter(place => {
+            const categories = place.categories || [];
+            const categoryText = categories.join(',').toLowerCase();
+            const name = place.name.trim();
+
+            if (category === 'restaurants') {
+                const isFoodCategory = categories.some(c => c.startsWith('catering.restaurant') || c.startsWith('catering.cafe') || c.startsWith('catering.fast_food'));
+                if (!isFoodCategory) return false;
+                if (restaurantNameProblem.test(name)) return false;
                 return true;
-            })
-            .map((place) => {
-                let score = 0;
-                const categories = place.categories || [];
+            }
 
-                if (category === 'tourist_attractions') {
-                    if (categories.some(c => c === 'tourism.sights')) score += 100;
-                    if (categories.some(c => c === 'tourism.attraction')) score += 95;
-                    if (categories.some(c => c.includes('place_of_worship'))) score += 90;
-                    if (categories.some(c => c.includes('museum') || c.includes('culture'))) score += 85;
-                    if (categories.some(c => c.includes('park') || c.startsWith('natural'))) score += 75;
-                    if (categories.some(c => c.includes('statue') || c.includes('memorial'))) score -= 20;
-                }
+            if (category !== 'tourist_attractions') return true;
 
-                if (category === 'restaurants') {
-                    if (categories.includes('catering.restaurant')) score += 100;
-                    if (categories.includes('catering.cafe')) score += 70;
-                }
+            const isStrongTourism = categories.some(c => (
+                c === 'tourism.attraction' ||
+                c === 'tourism.sights' ||
+                c.includes('museum') ||
+                c.includes('culture') ||
+                c.includes('place_of_worship') ||
+                c.includes('park') ||
+                c.startsWith('natural')
+            ));
+            if (!isStrongTourism) return false;
+            if (infrastructure.test(name)) return false;
+            // Do not use a statue/viewpoint/train/building as a headline attraction
+            // unless it is also clearly a historic/cultural/religious site.
+            if (weakAttraction.test(name) && !categoryText.includes('historic') && !categoryText.includes('culture') && !categoryText.includes('museum') && !categoryText.includes('place_of_worship')) return false;
+            return true;
+        });
 
-                if (Number.isFinite(place.distanceMeters)) {
-                    score += Math.max(0, 30 - place.distanceMeters / 500);
-                }
+        const scored = filtered.map(place => {
+            let score = 0;
+            const categories = place.categories || [];
+            if (category === 'tourist_attractions') {
+                if (categories.includes('tourism.attraction')) score += 100;
+                if (categories.includes('tourism.sights')) score += 95;
+                if (categories.some(c => c.includes('museum'))) score += 90;
+                if (categories.some(c => c.includes('culture'))) score += 85;
+                if (categories.some(c => c.includes('place_of_worship'))) score += 82;
+                if (categories.some(c => c.includes('historic'))) score += 80;
+                if (categories.some(c => c.includes('park'))) score += 70;
+                if (categories.some(c => c.startsWith('natural'))) score += 65;
+            } else if (category === 'restaurants') {
+                if (categories.includes('catering.restaurant')) score += 100;
+                if (categories.includes('catering.cafe')) score += 80;
+                if (categories.includes('catering.fast_food')) score += 60;
+            }
+            if (Number.isFinite(place.distanceMeters)) score += Math.max(0, 25 - place.distanceMeters / 500);
+            return { ...place, _score: score };
+        });
 
-                return { ...place, _score: score };
-            })
-            .sort((a, b) => b._score - a._score)
-            .map(({ _score, ...place }) => place);
-
-        // Deduplicate by normalized name.
+        scored.sort((a, b) => b._score - a._score);
         const seen = new Set();
-        return scored.filter((place) => {
+        return scored.filter(place => {
             const key = place.name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
             if (seen.has(key)) return false;
             seen.add(key);
+            delete place._score;
             return true;
         });
     }
