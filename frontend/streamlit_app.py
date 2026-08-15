@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 from contextlib import AsyncExitStack
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Literal, Optional, Union
 
 import nest_asyncio
@@ -12,7 +12,7 @@ from mcp import ClientSession
 from mcp.client.sse import sse_client
 from langchain_groq import ChatGroq
 from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import StructuredTool
 
 nest_asyncio.apply()
@@ -21,28 +21,26 @@ st.set_page_config(page_title="Neuronworks Travel Agent", page_icon="✈️", la
 st.markdown("""
 <style>
 .stApp { background: radial-gradient(circle at 10% 0%, #1d4ed8 0, transparent 35%), radial-gradient(circle at 90% 10%, #7c3aed 0, transparent 32%), #080b14; }
-.block-container { max-width: 1180px; padding-top: 2rem; padding-bottom: 7rem; }
-.hero { padding: 28px 30px; border-radius: 24px; margin-bottom: 22px; background: linear-gradient(135deg, rgba(37,99,235,.30), rgba(124,58,237,.25)); border: 1px solid rgba(255,255,255,.12); box-shadow: 0 18px 60px rgba(0,0,0,.25); }
-.hero h1 { margin: 0; color: #fff; font-size: 2.25rem; letter-spacing: -.04em; }
-.hero p { margin: 8px 0 0; color: #cbd5e1; font-size: 1rem; }
-.status-pill { display:inline-block; padding:5px 11px; border-radius:999px; background:rgba(255,255,255,.10); color:#e2e8f0; font-size:.78rem; border:1px solid rgba(255,255,255,.12); }
+.block-container { max-width: 1180px; padding-top: 1.7rem; padding-bottom: 6rem; }
+.hero { padding: 28px 30px; border-radius: 24px; margin-bottom: 20px; background: linear-gradient(135deg, rgba(37,99,235,.32), rgba(124,58,237,.27)); border: 1px solid rgba(255,255,255,.12); box-shadow: 0 18px 60px rgba(0,0,0,.25); }
+.hero h1 { margin: 0; color: #fff; font-size: 2.2rem; letter-spacing: -.04em; }
+.hero p { margin: 8px 0 0; color: #cbd5e1; font-size: .98rem; }
+.badge { display:inline-block; padding:5px 11px; border-radius:999px; background:rgba(255,255,255,.10); color:#e2e8f0; font-size:.76rem; border:1px solid rgba(255,255,255,.12); }
 section[data-testid="stSidebar"] { background: rgba(8,11,20,.96); border-right: 1px solid rgba(255,255,255,.08); }
-section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] h3 { color:#f8fafc; }
-div[data-testid="stChatMessage"] { border: 1px solid rgba(255,255,255,.09); border-radius: 20px; padding: 1.15rem 1.25rem; margin: .8rem 0; background: rgba(15,23,42,.76); box-shadow: 0 10px 30px rgba(0,0,0,.18); }
+div[data-testid="stChatMessage"] { border: 1px solid rgba(255,255,255,.09); border-radius: 20px; padding: 1.15rem 1.25rem; margin: .8rem 0; background: rgba(15,23,42,.80); box-shadow: 0 10px 30px rgba(0,0,0,.18); }
 div[data-testid="stChatMessageContent"] { color:#e5e7eb; }
-div[data-testid="stChatMessageContent"] h1, div[data-testid="stChatMessageContent"] h2, div[data-testid="stChatMessageContent"] h3 { color:#fff; margin-top:.5rem; }
+div[data-testid="stChatMessageContent"] h1, div[data-testid="stChatMessageContent"] h2, div[data-testid="stChatMessageContent"] h3 { color:#fff; }
 div[data-testid="stChatMessageContent"] table { border-radius:12px; overflow:hidden; }
-div[data-testid="stChatMessageContent"] code { color:#c4b5fd; }
 div[data-testid="stExpander"] { border:1px solid rgba(255,255,255,.09); border-radius:14px; }
-.small-muted { color:#94a3b8; font-size:.82rem; }
+.muted { color:#94a3b8; font-size:.82rem; }
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("""
 <div class="hero">
-  <div class="status-pill">● LIVE MCP TRAVEL INTELLIGENCE</div>
+  <div class="badge">● LIVE MCP TRAVEL INTELLIGENCE</div>
   <h1>✈️ Neuronworks Travel Agent</h1>
-  <p>Flights · Hotels · Places · Restaurants · Weather · Currency · Budget</p>
+  <p>Live flights · hotels · places · restaurants · weather · currency · budget</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -52,7 +50,7 @@ with st.sidebar:
     groq_api_key = os.environ.get("GROQ_API_KEY") or st.text_input("Groq API Key", type="password")
     hf_token = os.environ.get("HF_TOKEN") or st.text_input("Hugging Face Token", type="password")
     if not groq_api_key:
-        st.warning("Enter GROQ_API_KEY for the GPT-OSS semantic router.")
+        st.warning("Enter GROQ_API_KEY for the semantic router.")
         st.stop()
     if not hf_token:
         st.warning("Enter HF_TOKEN for Llama 3.3 70B.")
@@ -60,7 +58,7 @@ with st.sidebar:
     os.environ["GROQ_API_KEY"] = groq_api_key
     os.environ["HF_TOKEN"] = hf_token
     st.success("🟢 Connected")
-    st.markdown('<div class="small-muted">Main planner: Meta Llama 3.3 70B Instruct · Router: GPT-OSS 20B</div>', unsafe_allow_html=True)
+    st.markdown('<div class="muted">Planner: Llama 3.3 70B Instruct · Router: GPT-OSS 20B</div>', unsafe_allow_html=True)
 
 
 def schema_type(schema: Dict[str, Any]):
@@ -95,71 +93,18 @@ def create_pydantic_model_from_schema(name: str, schema: Dict[str, Any]):
     return create_model(f"{name}Input", **fields)
 
 
-current_date = datetime.now().strftime("%Y-%m-%d")
-SYSTEM_PROMPT = f"""
-You are Neuronworks Travel Agent, a factual travel-planning assistant.
-TODAY: {current_date}
-
-DATA INTEGRITY — ABSOLUTE:
-- Never invent flight details, hotel prices, ratings, attractions, restaurants, weather, exchange rates, links, or availability.
-- Never write filler such as "other options are available" unless the tool explicitly provides a count or more options that you actually received.
-- Never create a generic price range such as "$500-$1000". If the budget tool returns a generic estimate, reproduce its exact returned estimate and label it GENERIC ESTIMATE.
-- Never describe the generic budget estimate as the actual trip cost.
-- When live flight/hotel prices are present, calculate an ACTUAL LIVE-DATA SUBTOTAL from those selected prices. State clearly what is included and what is not.
-- If a required service failed, show "Unavailable — [actual reason]". Do not replace it with a guess.
-
-TRIP DATES:
-- Respect the user's exact dates. Do not silently change them.
-- The difference between Aug 20 and Aug 25 is 5 nights / 5 elapsed days; if presenting daily plans, use the actual calendar dates and do not invent an extra day.
-- Ask for missing dates rather than assuming tomorrow or choosing arbitrary dates.
-
-COMPLETE FIRST TRIP:
-- Prefer MCP tool `build_trip_data`. It orchestrates flights, hotels, attractions, restaurants, weather, budget, and currency when requested.
-- Flight origin/destination must be IATA codes. Common mappings: Chennai MAA, Madurai IXM, Colombo CMB, London LHR, Paris CDG, New York JFK/EWR.
-- Generic budget is an estimate, never a live booking total.
-
-WEATHER:
-- OpenWeather's standard 5-day / 3-hour forecast has a limited rolling forecast window.
-- If only some requested trip dates have live forecast coverage, report ONLY those dates and explicitly say which dates are not currently covered. Never extrapolate the first day's weather to the rest of the trip.
-- Do not say "forecast for the trip" if the tool returned only one date.
-
-ITINERARY:
-- Build a REAL day-by-day itinerary from the returned places/restaurants.
-- Do not turn arbitrary statues, roads, bus stations, or generic map POIs into the main tourist attractions unless the returned place data actually identifies them as attractions.
-- Use the strongest returned attractions first. If the place data is poor, say so rather than padding the itinerary.
-- Restaurants are suggestions, not confirmed reservations.
-- Keep the itinerary geographically sensible and avoid stuffing 5–10 places into one day.
-
-FINAL ANSWER STYLE:
-- Produce ONE answer only. Never output a preliminary plan and then repeat it as a "final answer".
-- Never expose internal reasoning or tool-selection details.
-- Use clean Markdown and concise sections:
-  ## ✈️ Trip at a glance
-  ## 🛫 Flights
-  ## 🏨 Hotels
-  ## 📍 Things to do
-  ## 🍽️ Food picks
-  ## 🌦️ Weather
-  ## 💰 Budget
-  ## 🗓️ Suggested itinerary
-  ## ⚠️ Notes
-- Only show sections supported by actual returned data.
-- Use exact live prices when available.
-- For flights and hotels, identify the provider/live-source status when available.
-- For the itinerary, use dates and short morning/afternoon/evening blocks instead of one huge paragraph.
-"""
-
 CLASSIFIER_MODEL = "openai/gpt-oss-20b"
 
 
 async def needs_fresh_tool_data(user_msg: str, trip_data: dict, last_answer: str) -> bool:
     if not trip_data: return True
-    prompt = f"""Classify as REUSE or FRESH.
-Existing data: {', '.join(trip_data.keys())}
+    prompt = f"""Classify exactly REUSE or FRESH.
+Existing data keys: {', '.join(trip_data.keys())}
 Last answer: {last_answer[:500]}
-User: {user_msg}
-REUSE only if fully answerable from existing data. FRESH for a new destination, dates, origin, travelers, category, or live information.
-Reply exactly REUSE or FRESH."""
+New user message: {user_msg}
+REUSE only if the new request is answerable from existing trip data.
+FRESH for new destination, dates, origin, travelers, category, or live information.
+Reply with exactly one word."""
     try:
         router = ChatGroq(model=CLASSIFIER_MODEL, temperature=0, max_tokens=5)
         result = await router.ainvoke([HumanMessage(content=prompt)])
@@ -168,26 +113,183 @@ Reply exactly REUSE or FRESH."""
         return True
 
 
-def compact_json(value, limit=9000):
-    try: return json.dumps(value, ensure_ascii=False)[:limit]
-    except Exception: return str(value)[:limit]
+def json_obj(value):
+    if isinstance(value, dict): return value
+    try: return json.loads(value)
+    except Exception: return {}
 
 
-def infer_bundle_args(tool_calls):
-    args = {}
-    for call in tool_calls:
-        name, a = call.get("name"), call.get("args") or {}
-        if name == "search_flights":
-            args.update({"origin": a.get("origin"), "destinationAirport": a.get("destination"), "departDate": a.get("departDate"), "returnDate": a.get("returnDate"), "passengers": a.get("passengers", 1)})
-        elif name == "search_hotels":
-            args.setdefault("destinationCity", a.get("city")); args.setdefault("departDate", a.get("checkIn")); args.setdefault("returnDate", a.get("checkOut")); args.setdefault("passengers", a.get("adults", 1))
-        elif name == "search_places":
-            args.setdefault("destinationCity", a.get("location"))
-    if all(args.get(k) for k in ("destinationCity", "origin", "destinationAirport", "departDate", "returnDate")):
-        args["destinationCountry"] = "Unknown"
-        args["budgetLevel"] = "budget"
-        return args
-    return None
+def as_list(value):
+    return value if isinstance(value, list) else []
+
+
+def money(value, currency="USD"):
+    try: return f"{currency} {float(value):,.2f}"
+    except Exception: return "Price unavailable"
+
+
+def dates_between(start_date, end_date):
+    start = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end = datetime.strptime(end_date, "%Y-%m-%d").date()
+    return [start + timedelta(days=i) for i in range((end - start).days + 1)]
+
+
+def clean_attractions(attractions):
+    bad = ("road", "street", "highway", "bus stop", "bus station", "parking", "junction", "roundabout", "signal")
+    output, seen = [], set()
+    for item in as_list(attractions):
+        name = str(item.get("name", "")).strip()
+        if not name: continue
+        key = name.lower().strip()
+        if key in seen: continue
+        text = f"{name} {item.get('description') or ''} {item.get('kinds') or ''}".lower()
+        categories = [str(x).lower() for x in item.get("categories", [])]
+        has_tourism = any(x.startswith("tourism.") for x in categories)
+        if not has_tourism and any(term in text for term in bad): continue
+        if "statue" in text and not any(x in text for x in ("temple", "monument", "museum", "historic", "memorial")): continue
+        seen.add(key); output.append(item)
+    return output
+
+
+def render_trip(trip):
+    request = trip.get("request", {})
+    services = trip.get("services", {})
+    live = trip.get("liveDataSummary", {})
+
+    origin = request.get("origin", "")
+    city = request.get("destinationCity", "")
+    country = request.get("destinationCountry", "")
+    depart = request.get("departDate", "")
+    return_date = request.get("returnDate", "")
+    travelers = request.get("travelers", 1)
+    nights = int(request.get("durationNights", 0) or 0)
+    calendar_days = int(request.get("calendarDays", nights + 1) or nights + 1)
+
+    flights = as_list(services.get("flights"))
+    hotels = as_list(services.get("hotels"))
+    attractions = clean_attractions(services.get("attractions"))
+    restaurants = as_list(services.get("restaurants"))
+    weather_obj = json_obj(services.get("weather"))
+    budget = json_obj(services.get("budget"))
+
+    lines = []
+    lines.append("## ✈️ Trip at a glance\n")
+    lines.append(f"**{origin} → {city}, {country}**  ")
+    lines.append(f"**{depart} → {return_date} · {travelers} traveler(s) · {nights} night(s) / {calendar_days} calendar day(s)**  ")
+    lines.append(f"Budget level: **{request.get('budgetLevel', 'mid-range')}**\n")
+
+    lines.append("## 🛫 Flights\n")
+    if flights:
+        lines.append("| Airline | Price | Departure | Arrival | Duration | Stops |\n|---|---:|---|---|---:|---:|")
+        for flight in flights[:5]:
+            stops = int(flight.get('stops', 0) or 0)
+            lines.append(f"| {flight.get('airline', 'Unknown')} | {money(flight.get('price'), flight.get('currency', 'USD'))} | {flight.get('departure', '—')} | {flight.get('arrival', '—')} | {flight.get('duration', '—')} | {'Non-stop' if stops == 0 else str(stops) + ' stop(s)'} |")
+        lines.append("\n*Live provider prices for this search. Availability may change.*\n")
+    else:
+        error = json_obj(services.get("flights")).get("error") or services.get("flights")
+        lines.append(f"**Live flights unavailable.** {error or 'No flight options were returned.'}\n")
+
+    lines.append("## 🏨 Hotels\n")
+    if hotels:
+        lines.append("| Hotel | Nightly | Rating | Reviews |\n|---|---:|---:|---:|")
+        for hotel in hotels[:6]:
+            rating = hotel.get("rating")
+            rating_text = f"{float(rating):.1f}" if isinstance(rating, (int, float)) else "—"
+            lines.append(f"| {hotel.get('name', 'Unknown')} | {money(hotel.get('price'), hotel.get('currency', 'USD'))} | {rating_text} | {hotel.get('reviews', '—')} |")
+        lines.append(f"\n*Rates returned for {depart} → {return_date}.*\n")
+    else:
+        err = services.get("hotels")
+        err_text = err.get("error") if isinstance(err, dict) else str(err or "No hotel options were returned.")
+        lines.append(f"**Live hotels unavailable.** {err_text}\n")
+
+    lines.append("## 📍 Things to do\n")
+    if attractions:
+        lines.append("Only POIs that survived the attraction-quality filter are shown.\n")
+        for place in attractions[:8]:
+            name = place.get("name", "Unknown place")
+            desc = place.get("description")
+            lines.append(f"- **{name}**" + (f" — {desc}" if desc else ""))
+        lines.append("")
+    else:
+        lines.append("**No high-quality live tourist attractions were returned.** I won't pad this with roads, bus stops, or random map infrastructure.\n")
+
+    lines.append("## 🍽️ Food picks\n")
+    if restaurants:
+        for restaurant in restaurants[:8]:
+            name = restaurant.get("name", "Unknown restaurant")
+            desc = restaurant.get("description") or ""
+            lines.append(f"- **{name}**" + (f" — {desc}" if desc else ""))
+        lines.append("\n*Recommendations only; no reservation is implied.*\n")
+    else:
+        lines.append("**No live restaurant results were returned.**\n")
+
+    lines.append("## 🌦️ Weather\n")
+    weather_results = weather_obj.get("results", []) if isinstance(weather_obj, dict) else []
+    if weather_results:
+        lines.append("| Date | Temp | Feels like | Conditions | Humidity | Rain |\n|---|---:|---:|---|---:|---:|")
+        for item in weather_results:
+            lines.append(f"| {item.get('date', '—')} | {item.get('temperature', '—')}°C | {item.get('feelsLike', '—')}°C | {item.get('description', '—')} | {item.get('humidity', '—')}% | {item.get('precipitationProbability', '—')}% |")
+        coverage = weather_obj.get("coverage", {})
+        returned_start = coverage.get("returnedStart")
+        returned_end = coverage.get("returnedEnd")
+        if returned_start and returned_end:
+            covered = returned_start if returned_start == returned_end else f"{returned_start} → {returned_end}"
+            lines.append(f"\n*Live forecast coverage currently returned: **{covered}**. Later dates are not extrapolated.*\n")
+    else:
+        err = weather_obj.get("error") if isinstance(weather_obj, dict) else services.get("weather")
+        lines.append(f"**Live weather unavailable for the requested dates.** {err or ''}\n")
+
+    lines.append("## 💰 Budget\n")
+    if budget:
+        bcurrency = budget.get("currency", "USD")
+        total = budget.get("total_budget")
+        breakdown = budget.get("breakdown", {})
+        lines.append(f"**Generic estimate:** {money(total, bcurrency)}")
+        lines.append(f"- Flight estimate: {money(breakdown.get('flights_estimate'), bcurrency)}")
+        lines.append(f"- Accommodation estimate: {money(breakdown.get('accommodation_estimate'), bcurrency)}")
+        lines.append(f"- Daily expenses estimate: {money(breakdown.get('daily_expenses_estimate'), bcurrency)}")
+        lines.append("\n*This is a planning estimate, not a live quote.*\n")
+    if live.get("complete"):
+        lines.append(f"**Cheapest live-data subtotal:** {money(live.get('cheapestLiveSubtotal'), live.get('currency', 'USD'))}")
+        lines.append("Includes the cheapest returned live flight offer + cheapest returned hotel rate × nights. It excludes food, local transport, activities, and taxes/fees not included by providers.\n")
+    else:
+        lines.append("**Live-data subtotal:** incomplete because a live flight or hotel price was missing.\n")
+
+    lines.append("## 🗓️ Suggested itinerary\n")
+    itinerary_dates = dates_between(depart, return_date) if depart and return_date else []
+    useful_attractions = attractions[:max(1, min(6, len(attractions)))]
+    useful_restaurants = restaurants[:max(1, min(6, len(restaurants)))]
+
+    for idx, day in enumerate(itinerary_dates):
+        lines.append(f"### Day {idx + 1} · {day.strftime('%a, %d %b %Y')}")
+        if idx == 0:
+            lines.append("- **Arrival:** Travel from the origin and check in after arrival.")
+            if useful_attractions:
+                lines.append(f"- **Evening:** Easy first stop at **{useful_attractions[0].get('name')}** if time/energy allows.")
+        elif idx == len(itinerary_dates) - 1:
+            lines.append("- **Morning:** Check out and keep the final morning flexible.")
+            lines.append("- **Departure:** Return journey after check-out.")
+        else:
+            if useful_attractions:
+                a1 = useful_attractions[(idx - 1) % len(useful_attractions)]
+                lines.append(f"- **Morning:** **{a1.get('name')}**")
+                if idx % 2 == 1 and len(useful_attractions) > 1:
+                    a2 = useful_attractions[idx % len(useful_attractions)]
+                    if a2.get('name') != a1.get('name'):
+                        lines.append(f"- **Afternoon:** **{a2.get('name')}**")
+            else:
+                lines.append("- **Day plan:** Keep the day flexible; the live place feed did not return enough quality attractions.")
+            if useful_restaurants:
+                r = useful_restaurants[(idx - 1) % len(useful_restaurants)]
+                lines.append(f"- **Food:** **{r.get('name')}**")
+        lines.append("")
+
+    lines.append("## ⚠️ Notes\n")
+    lines.append("- Live prices and availability can change before booking.")
+    lines.append("- The itinerary uses live POIs that passed the service's quality filter; it does not invent landmarks.")
+    if weather_results:
+        lines.append("- Weather is shown only for dates actually covered by the live forecast provider.")
+    return "\n".join(lines)
 
 
 async def run_agent(chat_history, trip_data, chat_container):
@@ -213,44 +315,32 @@ async def run_agent(chat_history, trip_data, chat_container):
             fresh = await needs_fresh_tool_data(latest_user, trip_data, last_answer)
             if fresh and trip_data: trip_data.clear()
 
-            messages = [SystemMessage(content=SYSTEM_PROMPT)]
-            if trip_data:
-                messages.append(SystemMessage(content="CURRENT TRIP DATA (ground truth):\n" + "\n\n".join(f"### {k}\n{compact_json(v, 5000)}" for k, v in trip_data.items())))
-            for m in [x for x in chat_history if x["role"] in ("user", "assistant")][-12:]:
-                messages.append(HumanMessage(content=m["content"]) if m["role"] == "user" else AIMessage(content=m["content"]))
-
             if fresh:
                 status.info("🧠 Planning with live travel services…")
-                first = await llm_tools.ainvoke(messages)
-                bundle = infer_bundle_args(first.tool_calls or [])
+                first = await llm_tools.ainvoke([
+                    SystemMessage(content="For a complete first trip, call build_trip_data when available. Do not fabricate missing dates or origins."),
+                    HumanMessage(content=latest_user)
+                ])
                 bundle_tool = next((t for t in tools if t.name == "build_trip_data"), None)
+                bundle_call = next((c for c in (first.tool_calls or []) if c.get("name") == "build_trip_data"), None)
 
-                if bundle and bundle_tool:
+                if bundle_tool and bundle_call:
                     with st.expander("🧰 Live services used", expanded=False):
                         st.caption("Flights · Hotels · Attractions · Restaurants · Weather · Budget")
-                        st.json(bundle)
-                    status.info("⚡ Running the complete service bundle…")
-                    result = await bundle_tool.coroutine(**bundle)
+                    status.info("⚡ Fetching live trip data…")
+                    result = await bundle_tool.coroutine(**bundle_call["args"])
                     content = result.content[0].text
-                    messages.append(SystemMessage(content="LIVE TRIP DATA FROM MCP build_trip_data:\n" + content))
-                    try: trip_data["build_trip_data"] = json.loads(content)
-                    except Exception: trip_data["build_trip_data"] = content
-                else:
-                    messages.append(first)
-                    for call in first.tool_calls or []:
-                        selected = next((t for t in tools if t.name == call["name"]), None)
-                        if not selected: continue
-                        with st.expander(f"🧰 {call['name']}", expanded=False): st.json(call["args"])
-                        try:
-                            result = await selected.coroutine(**call["args"]); content = result.content[0].text
-                        except Exception as exc: content = json.dumps({"error": str(exc)})
-                        messages.append(ToolMessage(tool_call_id=call["id"], name=call["name"], content=content))
-                        try: trip_data[call["name"]] = json.loads(content)
-                        except Exception: trip_data[call["name"]] = content
-            else:
-                status.info("♻️ Reusing your existing live trip data…")
+                    trip = json_obj(content)
+                    trip_data["build_trip_data"] = trip
+                    status.empty()
+                    return render_trip(trip)
 
-            status.info("✨ Writing your itinerary…")
+            # Follow-ups or fallback: use structured trip data, not invented values.
+            messages = [SystemMessage(content="Answer using only CURRENT TRIP DATA. Never invent prices, places, or dates.")]
+            messages.append(SystemMessage(content="CURRENT TRIP DATA:\n" + json.dumps(trip_data, ensure_ascii=False)[:14000]))
+            for m in [x for x in chat_history if x["role"] in ("user", "assistant")][-8:]:
+                messages.append(HumanMessage(content=m["content"]) if m["role"] == "user" else AIMessage(content=m["content"]))
+            status.info("♻️ Reusing the existing trip data…")
             final = await llm.ainvoke(messages)
             status.empty()
             return final.content or "I couldn't generate a response from the available live data."
@@ -265,7 +355,7 @@ if "trip_data" not in st.session_state: st.session_state.trip_data = {}
 for message in st.session_state.messages:
     with st.chat_message(message["role"]): st.markdown(message["content"])
 
-prompt = st.chat_input("Where are you going? Try: Chennai → Madurai, Aug 20–25, 2 people")
+prompt = st.chat_input("Where are you going? Try: Chennai → Madurai, Aug 20–25, 1 traveler")
 if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"): st.markdown(prompt)
