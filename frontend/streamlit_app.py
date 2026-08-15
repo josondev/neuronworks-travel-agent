@@ -17,7 +17,6 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import StructuredTool
 
 nest_asyncio.apply()
-st.set_page_config(page_title="Travel Agent", page_icon="✈️", layout="wide")
 
 st.markdown("""
 <style>
