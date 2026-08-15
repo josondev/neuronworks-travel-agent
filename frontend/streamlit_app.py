@@ -75,9 +75,19 @@ Examples:
 - "change destination to Coimbatore" => UPDATE, destinationCity=Coimbatore
 - "which hotel is cheapest" => REUSE
 - New trip missing dates/origin => ASK
-Never invent dates. Infer these IATA codes only when obvious: Chennai MAA, Madurai IXM, Coimbatore CJB, Colombo CMB.
+
+CRITICAL FLIGHT/AIRPORT RULE — ALWAYS NORMALIZE TO IATA:
+- Whenever the request contains an origin or destination airport/city, resolve it to the official uppercase 3-letter IATA airport code before returning JSON.
+- NEVER return a city name, country name, airport name, or free-form location in `origin` or `destinationAirport` when a standard IATA code exists.
+- Always use uppercase 3-letter IATA codes for every place, regardless of the city/country mentioned by the user.
+- This applies to ALL current and future destinations, not only examples below.
+- If you confidently know the correct IATA code, use it. If you do not know it with confidence, leave the airport field null rather than guessing.
+- Examples: Chennai→MAA, Madras→MAA, Madurai→IXM, Coimbatore→CJB, Colombo→CMB, Bengaluru/Bangalore→BLR, Mumbai/Bombay→BOM, Delhi/New Delhi→DEL, Hyderabad→HYD, Kochi→COK.
+- The flight service receives only these normalized IATA codes.
+
+Never invent dates. Return JSON with the fields exactly as requested.
 Return {{"action":"PLAN","destinationCity":null,"destinationCountry":null,"destinationAirport":null,"origin":null,"departDate":null,"returnDate":null,"passengers":null,"budgetLevel":null,"currencyFrom":null,"currencyTo":null,"currencyAmount":1}}'''
-    model=ChatGroq(model="openai/gpt-oss-20b",temperature=0,max_tokens=180)
+    model=ChatGroq(model="openai/gpt-oss-20b",temperature=0,max_tokens=220)
     result=asyncio.run(model.ainvoke([HumanMessage(content=prompt)]))
     txt=(result.content or "").strip()
     m=re.search(r"\{.*\}",txt,re.S)
