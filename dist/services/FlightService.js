@@ -5,7 +5,6 @@ dotenv.config();
 
 export class FlightService {
     constructor() {
-        // SerpApi replaces the retired Amadeus Self-Service integration.
         this.apiKey = process.env.SERPAPI_API_KEY || '';
         this.baseUrl = 'https://serpapi.com/search.json';
 
@@ -36,29 +35,20 @@ export class FlightService {
                 hl: 'en'
             };
 
-            if (params.returnDate) {
-                requestParams.return_date = params.returnDate;
-            }
+            if (params.returnDate) requestParams.return_date = params.returnDate;
 
             const response = await axios.get(this.baseUrl, {
                 params: requestParams,
                 timeout: 30000
             });
 
-            if (response.data?.error) {
-                throw new Error(response.data.error);
-            }
-
+            if (response.data?.error) throw new Error(response.data.error);
             return this.transformSerpApiResponse(response.data);
         } catch (error) {
             console.error(
                 '❌ Google Flights / SerpApi error:',
                 error.response?.data || error.message
             );
-
-            // IMPORTANT: never return fabricated/mock flights.
-            // The agent's zero-hallucination policy requires an empty result
-            // when live flight data cannot be retrieved.
             return [];
         }
     }
@@ -69,45 +59,28 @@ export class FlightService {
             ...(data.other_flights || [])
         ];
 
-        if (rawFlights.length === 0) {
-            return [];
-        }
-
         const uniqueFlights = new Map();
         const googleFlightsUrl = data.search_metadata?.google_flights_url || null;
 
         for (const offer of rawFlights) {
             const segments = Array.isArray(offer.flights) ? offer.flights : [];
-            if (segments.length === 0) continue;
+            if (!segments.length) continue;
 
             const firstSegment = segments[0];
             const lastSegment = segments[segments.length - 1];
             const price = Number(offer.price);
-
             if (!Number.isFinite(price)) continue;
 
             const departure = firstSegment.departure_airport?.time || '';
             const arrival = lastSegment.arrival_airport?.time || '';
-
-            const airlines = [
-                ...new Set(
-                    segments
-                        .map(segment => segment.airline)
-                        .filter(Boolean)
-                )
-            ];
-
-            const durationMinutes = Number(
-                segments.reduce(
-                    (total, segment) => total + (Number(segment.duration) || 0),
-                    0
-                )
+            const airlines = [...new Set(segments.map(s => s.airline).filter(Boolean))];
+            const durationMinutes = segments.reduce(
+                (total, segment) => total + (Number(segment.duration) || 0),
+                0
             );
 
-            const durationHours = Math.floor(durationMinutes / 60);
-            const durationRemainingMinutes = durationMinutes % 60;
             const duration = durationMinutes > 0
-                ? `${durationHours}h ${durationRemainingMinutes}m`
+                ? `${Math.floor(durationMinutes / 60)}h ${durationMinutes % 60}m`
                 : 'Unknown';
 
             const key = [
@@ -127,7 +100,7 @@ export class FlightService {
                     arrival,
                     duration,
                     stops: Math.max(0, segments.length - 1),
-                    bookingLink: googleFlightsUrl,
+                    searchLink: googleFlightsUrl,
                     source: 'Google Flights via SerpApi'
                 });
             }
