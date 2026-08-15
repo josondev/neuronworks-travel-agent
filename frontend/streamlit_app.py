@@ -113,6 +113,18 @@ def local_route(message, context):
     if re.search(r"\bcheapest\s+(?:hotel|flight)\b", text):
         return {"action": "REUSE"}
 
+    # "do the same with/for Coimbatore" means: preserve the active trip
+    # context and change only the destination.
+    same = re.search(r"\b(?:do|make)\s+(?:the\s+)?same\s+(?:trip\s+)?(?:with|for|in|to)\s+([a-zA-Z][\w\s-]*?)(?:\?|\.|$)", text)
+    if same:
+        city = same.group(1).strip().title()
+        return {
+            "action": "UPDATE",
+            "destinationCity": city,
+            "destinationAirport": IATA.get(city.lower()),
+            "destinationCountry": COUNTRY.get(city.lower()),
+        }
+
     compare = re.search(r"\bcompare\b.*\b(?:with|vs|versus|to)\s+([a-zA-Z][\w\s-]*?)(?:\?|\.|$)", text)
     if compare:
         city = compare.group(1).strip().title()
@@ -139,7 +151,6 @@ def local_route(message, context):
             "destinationCountry": COUNTRY.get(city.lower(), base.get("destinationCountry", "India")),
         })
 
-    # Also handle "from Chennai to Madurai from 2026-08-20 to 2026-08-25".
     dates = parse_natural_dates(text)
     if len(dates) == 2:
         base["departDate"], base["returnDate"] = dates
@@ -157,7 +168,6 @@ def local_route(message, context):
     elif any(word in text for word in ("mid-range", "moderate")):
         base["budgetLevel"] = "mid-range"
 
-    # Simple "to Madurai" fallback for known cities.
     if not base.get("destinationCity"):
         dest = re.search(r"\b(?:to|for)\s+(?:the\s+)?(?:city\s+of\s+)?(madurai|coimbatore|colombo|chennai)\b", text)
         if dest:
@@ -179,6 +189,7 @@ USER TURN:
 {message}
 
 Actions: PLAN, UPDATE, COMPARE, REUSE, ASK.
+- "do the same with/for X" => UPDATE, inherit origin/dates/travelers/budget and change only destination to X.
 - compare this with X => COMPARE, inherit origin/dates/travelers/budget.
 - change destination to X => UPDATE, inherit everything else.
 - cheapest hotel/flight => REUSE.
