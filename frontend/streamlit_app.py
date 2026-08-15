@@ -10,6 +10,7 @@ from datetime import datetime
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from langchain_groq import ChatGroq
+from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
 from langchain_core.tools import StructuredTool
 
@@ -78,16 +79,31 @@ st.caption("Powered by Neuronworks.ai & MCP")
 with st.sidebar:
     st.header("Configuration")
     server_url = st.text_input("MCP Server URL", value="https://neuronworks-travel-agent.onrender.com/sse")
-    
+
+    # GROQ_API_KEY: still needed for the fast REUSE/FRESH classifier (openai/gpt-oss-20b on Groq).
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         api_key = st.text_input("Groq API Key", type="password")
-    
+
     if not api_key:
         st.warning("⚠️ Please enter a Groq API Key to continue.")
         st.stop()
-    
+
     os.environ["GROQ_API_KEY"] = api_key
+
+    # HF_TOKEN: needed for the main agent LLM, now hosted on Hugging Face
+    # (meta-llama/Llama-3.3-70B-Instruct is a gated model — your token must
+    # have been granted access on the model page first).
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        hf_token = st.text_input("Hugging Face Token", type="password")
+
+    if not hf_token:
+        st.warning("⚠️ Please enter a Hugging Face Token to continue.")
+        st.stop()
+
+    os.environ["HF_TOKEN"] = hf_token
+
     st.success("✅ Ready to fly!")
 
 # --- HELPER: Convert JSON Schema to Pydantic ---
@@ -245,7 +261,20 @@ async def run_agent(chat_history, trip_data, chat_container):
             status_text.info(f"🛠️ Found {len(langchain_tools)} tools. Thinking...")
 
             # 3. Initialize LLM
-            llm = ChatGroq(model="llama-3.3-70b-versatile", temperature = 0)
+            # Main agent LLM now runs on Hugging Face's serverless Inference
+            # Providers instead of Groq (llama-3.3-70b-versatile was
+            # decommissioned on Groq). meta-llama/Llama-3.3-70B-Instruct is a
+            # GATED model on Hugging Face — the account behind HF_TOKEN must
+            # have requested and been granted access on the model page, or
+            # every call below will fail with a 403.
+            hf_endpoint = HuggingFaceEndpoint(
+                repo_id="meta-llama/Llama-3.3-70B-Instruct",
+                task="text-generation",
+                max_new_tokens=1024,
+                temperature=0.01,  # HF endpoint requires temperature > 0
+                huggingfacehub_api_token=os.environ["HF_TOKEN"],
+            )
+            llm = ChatHuggingFace(llm=hf_endpoint)
 
             # --- HARD GATE: decide in code, not just in the prompt, whether this turn
             # is even allowed to call tools. A system-prompt instruction like "don't
