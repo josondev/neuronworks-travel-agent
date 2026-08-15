@@ -18,68 +18,152 @@ from langchain_core.tools import StructuredTool
 
 nest_asyncio.apply()
 
-st.markdown("""
-<style>
-  /* App background */
-  .stApp {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  }
+import streamlit as st
 
-  section.main > div {
-    max-width: 100%;
-    padding: 1rem;
-  }
-
-  /* Base chat message box styling (common) */
-  div[data-testid="stChatMessage"]{
-    border-radius: 10px;
-    padding: 1rem;
-    margin: 0.5rem 0;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.12);
-  }
-
-  /* DARK MODE */
-  @media (prefers-color-scheme: dark) {
-    div[data-testid="stChatMessage"]{
-      background: #0b0b0b !important;
-    }
-
-    /* Target the actual rendered text inside chat messages */
-    div[data-testid="stChatMessageContent"],
-    div[data-testid="stChatMessageContent"] p,
-    div[data-testid="stChatMessageContent"] li,
-    div[data-testid="stChatMessageContent"] span,
-    div[data-testid="stChatMessageContent"] div{
-      color: #f7fafc !important;
-    }
-  }
-
-  /* LIGHT MODE */
-  @media (prefers-color-scheme: light) {
-    div[data-testid="stChatMessage"]{
-      background: #ffffff !important;
-    }
-
-    div[data-testid="stChatMessageContent"],
-    div[data-testid="stChatMessageContent"] p,
-    div[data-testid="stChatMessageContent"] li,
-    div[data-testid="stChatMessageContent"] span,
-    div[data-testid="stChatMessageContent"] div{
-      color: #111827 !important;
-    }
-  }
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown(
-    """
-<div class="hero">
-  <div class="badge">● LIVE MCP TRAVEL INTELLIGENCE</div>
-  <h1>✈️ Neuronworks Travel Agent</h1>
-  <p>Live flights · hotels · places · restaurants · weather · currency · budget</p>
-</div>
-""", unsafe_allow_html=True,
+# ---------------------------------------------------------------------
+# Page config
+# ---------------------------------------------------------------------
+st.set_page_config(
+    page_title="Neuronworks Travel Agent",
+    page_icon="✈️",
+    layout="wide",
 )
+
+# ---------------------------------------------------------------------
+# Theme
+# ---------------------------------------------------------------------
+def apply_theme() -> None:
+    st.markdown(
+        """
+        <style>
+        :root {
+            --bg-base: #080b14;
+            --blue: #2563eb;
+            --violet: #7c3aed;
+            --border-soft: rgba(255, 255, 255, 0.09);
+            --border-strong: rgba(255, 255, 255, 0.12);
+            --text-primary: #ffffff;
+            --text-secondary: #e5e7eb;
+            --text-muted: #94a3b8;
+            --code-accent: #c4b5fd;
+        }
+
+        /* Page background */
+        .stApp {
+            background:
+                radial-gradient(circle at 10% 0%, var(--blue) 0, transparent 35%),
+                radial-gradient(circle at 90% 10%, var(--violet) 0, transparent 32%),
+                var(--bg-base);
+        }
+
+        .block-container {
+            max-width: 1180px;
+            padding-top: 2rem;
+            padding-bottom: 7rem;
+        }
+
+        /* Hero banner */
+        .hero {
+            padding: 28px 30px;
+            border-radius: 24px;
+            margin-bottom: 22px;
+            background: linear-gradient(
+                135deg,
+                rgba(37, 99, 235, 0.30),
+                rgba(124, 58, 237, 0.25)
+            );
+            border: 1px solid var(--border-strong);
+            box-shadow: 0 18px 60px rgba(0, 0, 0, 0.25);
+        }
+        .hero h1 {
+            margin: 0;
+            color: var(--text-primary);
+            font-size: 2.25rem;
+            letter-spacing: -0.04em;
+        }
+        .hero p {
+            margin: 8px 0 0;
+            color: #cbd5e1;
+            font-size: 1rem;
+        }
+
+        .status-pill {
+            display: inline-block;
+            padding: 5px 11px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.10);
+            color: #e2e8f0;
+            font-size: 0.78rem;
+            border: 1px solid var(--border-strong);
+        }
+
+        /* Sidebar */
+        section[data-testid="stSidebar"] {
+            background: rgba(8, 11, 20, 0.96);
+            border-right: 1px solid var(--border-soft);
+        }
+        section[data-testid="stSidebar"] h2,
+        section[data-testid="stSidebar"] h3 {
+            color: #f8fafc;
+        }
+
+        /* Chat messages */
+        div[data-testid="stChatMessage"] {
+            border: 1px solid var(--border-soft);
+            border-radius: 20px;
+            padding: 1.15rem 1.25rem;
+            margin: 0.8rem 0;
+            background: rgba(15, 23, 42, 0.76);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+        }
+        div[data-testid="stChatMessageContent"] {
+            color: var(--text-secondary);
+        }
+        div[data-testid="stChatMessageContent"] h1,
+        div[data-testid="stChatMessageContent"] h2,
+        div[data-testid="stChatMessageContent"] h3 {
+            color: var(--text-primary);
+            margin-top: 0.5rem;
+        }
+        div[data-testid="stChatMessageContent"] table {
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        div[data-testid="stChatMessageContent"] code {
+            color: var(--code-accent);
+        }
+
+        /* Expanders */
+        div[data-testid="stExpander"] {
+            border: 1px solid var(--border-soft);
+            border-radius: 14px;
+        }
+
+        .small-muted {
+            color: var(--text-muted);
+            font-size: 0.82rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_hero() -> None:
+    st.markdown(
+        """
+        <div class="hero">
+          <div class="status-pill">● LIVE MCP TRAVEL INTELLIGENCE</div>
+          <h1>✈️ Neuronworks Travel Agent</h1>
+          <p>Flights · Hotels · Places · Restaurants · Weather · Currency · Budget</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+apply_theme()
+render_hero()
 
 with st.sidebar:
     st.markdown("### ⚙️ Configuration")
