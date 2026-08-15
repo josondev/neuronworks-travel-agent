@@ -229,8 +229,8 @@ def money(value, currency="USD"):
 
 
 def clean_attractions(items):
-    name_deny = re.compile(r"\b(road|street|highway|lane|path|junction|roundabout|bus\s*stop|bus\s*station|railway|parking|signal|flyover|underpass|bypass|overpass|salai|theru|sandhu|mawatha|marg|nagar|colony|layout|township|extension|ward|sector|block|circle|chowk)\b", re.I)
-    category_deny = ("administrative", "populated_place", "residential", "postcode", "suburb", "neighbourhood", "neighborhood", "locality", "commercial.building", "office")
+    name_deny = re.compile(r"\b(road|street|highway|lane|path|junction|roundabout|bus\s*stop|bus\s*station|railway|parking|signal|flyover|underpass|bypass|overpass|salai|theru|sandhu|mawatha|marg|nagar|colony|layout|township|extension|ward|sector|block|circle|chowk|hospital)\b", re.I)
+    category_deny = ("administrative", "populated_place", "residential", "postcode", "suburb", "neighbourhood", "neighborhood", "locality", "commercial.building", "office", "hospital")
     output, seen = [], set()
     for item in as_list(items):
         if not isinstance(item, dict): continue
@@ -485,6 +485,7 @@ Schema:
 
 Rules:
 - Use only attraction_ids and restaurant_ids supplied below.
+- NEVER INCLUDE Any Hospitals or Random Roads or statues. THAT IS VERY DISASTROUS IF YOU INCLUDE IT.
 - Never invent a place, restaurant, activity, price, or weather claim.
 - Dates must be within the trip dates.
 - Use each attraction at most once.
