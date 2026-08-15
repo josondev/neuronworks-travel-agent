@@ -202,6 +202,17 @@ def render_trip(trip):
     weather = obj(services.get("weather"))
     budget = obj(services.get("budget"))
 
+    # --- FIX: the itinerary loop below needs up to `days * 2` attractions
+    # (2 per day). Previously "Things to do" was hardcoded to attractions[:8]
+    # while the itinerary indexed into the full `attractions` list, so on
+    # trips longer than 4 days the itinerary silently pulled in places that
+    # were never shown to the user in "Things to do" (e.g. index 8, 9...).
+    # We now size a single shared pool to what the itinerary actually needs,
+    # and both sections read from that same pool so nothing appears in the
+    # itinerary without having been listed above first.
+    needed_for_itinerary = max(days, 1) * 2
+    itinerary_pool = attractions[:needed_for_itinerary]
+
     lines = []
     lines.append("## ✈️ Trip at a glance\n")
     lines.append(f"**{origin} → {city}, {country}**  ")
@@ -230,10 +241,12 @@ def render_trip(trip):
         lines.append(f"**Live hotels unavailable.** {err}\n")
 
     lines.append("## 📍 Things to do\n")
-    if attractions:
-        for p in attractions[:8]:
+    if itinerary_pool:
+        for p in itinerary_pool[:8]:  # cap the summary bullet list to 8 for readability
             desc = p.get("description")
             lines.append(f"- **{p.get('name', 'Unknown')}**" + (f" — {desc}" if desc else ""))
+        if len(itinerary_pool) > 8:
+            lines.append(f"- …and {len(itinerary_pool) - 8} more used directly in the itinerary below")
     else:
         lines.append("No strong tourist attractions were returned by the live places service. I won't pad the itinerary with roads, stations, or random map objects.")
     lines.append("")
@@ -278,17 +291,19 @@ def render_trip(trip):
     lines.append("")
 
     lines.append("## 🗓️ Suggested itinerary\n")
-    if not attractions:
+    if not itinerary_pool:
         lines.append("I won't invent an itinerary without trustworthy attraction data. Use the verified places above once the places service returns suitable tourist POIs.")
     else:
         # Each attraction appears at most once. We use up to one primary + one secondary per day.
+        # NOTE: now reads from `itinerary_pool`, the same list shown under "Things to do" above,
+        # so every place named here was already surfaced to the user.
         schedule = []
         for d in range(max(days, 1)):
             current = start + timedelta(days=d) if start else None
             if current and current > end:
                 break
-            p1 = attractions[d * 2] if d * 2 < len(attractions) else None
-            p2 = attractions[d * 2 + 1] if d * 2 + 1 < len(attractions) else None
+            p1 = itinerary_pool[d * 2] if d * 2 < len(itinerary_pool) else None
+            p2 = itinerary_pool[d * 2 + 1] if d * 2 + 1 < len(itinerary_pool) else None
             restaurant = restaurants[d % len(restaurants)] if restaurants else None
             schedule.append((current, p1, p2, restaurant))
 
