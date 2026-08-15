@@ -29,7 +29,7 @@ export class PlacesService {
                     categories: this.getCategoryKinds(category),
                     filter: `circle:${lon},${lat},${radius}`,
                     bias: `proximity:${lon},${lat}`,
-                    limit: 30,
+                    limit: 50,
                     apiKey: this.apiKey,
                     lang: 'en'
                 },
@@ -39,11 +39,12 @@ export class PlacesService {
             const raw = [];
             for (const item of placesResponse.data?.features || []) {
                 const p = item.properties || {};
-                // Do not substitute an address/road name as the place's name.
                 const name = String(p.name || '').trim();
                 if (!name) continue;
                 const categories = Array.isArray(p.categories) ? p.categories : [];
+
                 raw.push({
+                    placeId: p.place_id || null,
                     name,
                     description: p.description || null,
                     address: p.formatted || p.address_line2 || null,
@@ -78,6 +79,7 @@ export class PlacesService {
                 'tourism.sights',
                 'entertainment.museum',
                 'entertainment.culture',
+                'building.place_of_worship',
                 'leisure.park',
                 'natural'
             ].join(','),
@@ -93,7 +95,7 @@ export class PlacesService {
 
     rankAndFilter(places, category) {
         const infrastructure = /(road|street|highway|lane|path|way|junction|roundabout|signal|bus stop|bus station|railway|station|parking|building|mawatha)$/i;
-        const weakAttraction = /(statue|viewpoint|triangle|building|road|street|path|train)/i;
+        const weakAttraction = /(statue|viewpoint|triangle|building|road|street|path|train|water works|waterworks|water supply|car shelter|holy car|yaanaikal|nandi|pillar|pillars|thungal|memorial|monument)$/i;
         const restaurantNameProblem = /(street|road|lane|mawatha|marg|highway|junction|bus stop|station)$/i;
 
         const filtered = places.filter(place => {
@@ -102,7 +104,11 @@ export class PlacesService {
             const name = place.name.trim();
 
             if (category === 'restaurants') {
-                const isFoodCategory = categories.some(c => c.startsWith('catering.restaurant') || c.startsWith('catering.cafe') || c.startsWith('catering.fast_food'));
+                const isFoodCategory = categories.some(c =>
+                    c.startsWith('catering.restaurant') ||
+                    c.startsWith('catering.cafe') ||
+                    c.startsWith('catering.fast_food')
+                );
                 if (!isFoodCategory) return false;
                 if (restaurantNameProblem.test(name)) return false;
                 return true;
@@ -120,35 +126,54 @@ export class PlacesService {
                 c.startsWith('natural')
             ));
             if (!isStrongTourism) return false;
+
+            // Do not let map infrastructure masquerade as a tourist attraction.
             if (infrastructure.test(name)) return false;
-            // Do not use a statue/viewpoint/train/building as a headline attraction
-            // unless it is also clearly a historic/cultural/religious site.
-            if (weakAttraction.test(name) && !categoryText.includes('historic') && !categoryText.includes('culture') && !categoryText.includes('museum') && !categoryText.includes('place_of_worship')) return false;
+
+            // These are usually map-level objects or small monuments rather than
+            // destination-level attractions. Keep them out of the main itinerary.
+            // A city with fewer good results is preferable to fabricated/padded
+            // sightseeing recommendations.
+            if (weakAttraction.test(name)) {
+                const legitimateContext =
+                    categoryText.includes('museum') ||
+                    categoryText.includes('culture') ||
+                    categoryText.includes('place_of_worship') ||
+                    categoryText.includes('historic');
+                if (!legitimateContext) return false;
+            }
+
             return true;
         });
 
         const scored = filtered.map(place => {
             let score = 0;
             const categories = place.categories || [];
+
             if (category === 'tourist_attractions') {
-                if (categories.includes('tourism.attraction')) score += 100;
-                if (categories.includes('tourism.sights')) score += 95;
-                if (categories.some(c => c.includes('museum'))) score += 90;
-                if (categories.some(c => c.includes('culture'))) score += 85;
-                if (categories.some(c => c.includes('place_of_worship'))) score += 82;
-                if (categories.some(c => c.includes('historic'))) score += 80;
-                if (categories.some(c => c.includes('park'))) score += 70;
-                if (categories.some(c => c.startsWith('natural'))) score += 65;
+                if (categories.includes('tourism.attraction')) score += 120;
+                if (categories.includes('tourism.sights')) score += 110;
+                if (categories.some(c => c.includes('museum'))) score += 105;
+                if (categories.some(c => c.includes('culture'))) score += 100;
+                if (categories.some(c => c.includes('place_of_worship'))) score += 98;
+                if (categories.some(c => c.includes('historic'))) score += 96;
+                if (categories.some(c => c.includes('park'))) score += 80;
+                if (categories.some(c => c.startsWith('natural'))) score += 75;
             } else if (category === 'restaurants') {
                 if (categories.includes('catering.restaurant')) score += 100;
                 if (categories.includes('catering.cafe')) score += 80;
                 if (categories.includes('catering.fast_food')) score += 60;
             }
-            if (Number.isFinite(place.distanceMeters)) score += Math.max(0, 25 - place.distanceMeters / 500);
+
+            if (Number.isFinite(place.distanceMeters)) {
+                score += Math.max(0, 25 - place.distanceMeters / 500);
+            }
+
             return { ...place, _score: score };
         });
 
         scored.sort((a, b) => b._score - a._score);
+
         const seen = new Set();
         return scored.filter(place => {
             const key = place.name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
