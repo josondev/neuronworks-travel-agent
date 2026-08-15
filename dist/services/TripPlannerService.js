@@ -20,10 +20,11 @@ export class TripPlannerService {
             currencyFrom,
             currencyTo,
             currencyAmount = 1,
-            placesRadius = 5000
+            placesRadius = 10000
         } = args || {};
 
-        const duration = this.calculateDuration(departDate, returnDate);
+        const durationNights = this.calculateDuration(departDate, returnDate);
+        const calendarDays = durationNights + 1;
         const travelers = Math.max(1, Number(passengers) || 1);
 
         const result = {
@@ -34,14 +35,13 @@ export class TripPlannerService {
                 departDate,
                 returnDate: returnDate || null,
                 travelers,
-                durationDays: duration,
+                durationNights,
+                calendarDays,
                 budgetLevel
             },
             services: {}
         };
 
-        // Run independent live services concurrently. A failure in one service
-        // is captured as data instead of preventing the other services from running.
         const [flights, hotels, attractions, restaurants, weather, budget, currency] =
             await Promise.all([
                 this.safeCall('flights', () => this.flightService.searchFlights({
@@ -54,26 +54,27 @@ export class TripPlannerService {
                 this.safeCall('hotels', () => this.accommodationService.searchAccommodation({
                     city: destinationCity,
                     checkIn: departDate,
-                    checkOut: returnDate || departDate,
+                    checkOut: returnDate,
                     adults: travelers
                 })),
                 this.safeCall('attractions', () => this.placesService.getAttractions(
                     destinationCity,
-                    10
+                    12,
+                    placesRadius
                 )),
                 this.safeCall('restaurants', () => this.placesService.getRestaurants(
                     destinationCity,
-                    10
+                    12
                 )),
                 this.safeCall('weather', () => this.weatherService.getWeatherForecast({
                     city: destinationCity,
                     country: destinationCountry,
                     startDate: departDate,
-                    endDate: returnDate || departDate
+                    endDate: returnDate
                 })),
                 this.safeCall('budget', () => this.calculateBudget({
                     destinations: [destinationCity],
-                    duration,
+                    duration: durationNights,
                     travelers,
                     budgetLevel
                 })),
@@ -88,7 +89,57 @@ export class TripPlannerService {
         result.services.budget = budget;
         result.services.currency = currency;
 
+        result.liveDataSummary = this.calculateLiveSubtotal(flights, hotels, durationNights);
+
         return result;
+    }
+
+    calculateLiveSubtotal(flights, hotels, durationNights) {
+        const flightOptions = Array.isArray(flights) ? flights : [];
+        const hotelOptions = Array.isArray(hotels) ? hotels : [];
+
+        const cheapestFlight = flightOptions
+            .map(f => Number(f.price))
+            .filter(Number.isFinite)
+            .sort((a, b) => a - b)[0] ?? null;
+
+        const cheapestHotelPerNight = hotelOptions
+            .map(h => Number(h.price))
+            .filter(Number.isFinite)
+            .sort((a, b) => a - b)[0] ?? null;
+
+        const hotelTotal = cheapestHotelPerNight !== null
+            ? cheapestHotelPerNight * durationNights
+            : null;
+
+        const components = {};
+        let subtotal = 0;
+        let complete = true;
+
+        if (cheapestFlight !== null) {
+            components.cheapestFlight = cheapestFlight;
+            subtotal += cheapestFlight;
+        } else {
+            complete = false;
+        }
+
+        if (hotelTotal !== null) {
+            components.cheapestHotel = cheapestHotelPerNight;
+            components.cheapestHotelTotal = hotelTotal;
+            subtotal += hotelTotal;
+        } else {
+            complete = false;
+        }
+
+        return {
+            currency: 'USD',
+            cheapestLiveSubtotal: subtotal,
+            components,
+            complete,
+            note: complete
+                ? 'Subtotal uses the cheapest returned live flight offer plus the cheapest returned hotel nightly rate multiplied by the number of nights. It excludes food, local transport, activities, taxes/fees not included in provider prices, and other trip costs.'
+                : 'Live subtotal is incomplete because a usable live flight or hotel price was not returned.'
+        };
     }
 
     async safeCall(name, fn) {
@@ -106,7 +157,7 @@ export class TripPlannerService {
         if (!from || !to) {
             return {
                 skipped: true,
-                reason: 'Currency conversion was not requested. Provide currencyFrom and currencyTo when conversion is needed.'
+                reason: 'Currency conversion was not requested.'
             };
         }
 
@@ -118,10 +169,10 @@ export class TripPlannerService {
     }
 
     calculateDuration(startDate, endDate) {
-        if (!startDate || !endDate) return 1;
+        if (!startDate || !endDate) return 0;
         const start = new Date(`${startDate}T00:00:00Z`);
         const end = new Date(`${endDate}T00:00:00Z`);
-        const diff = Math.ceil((end - start) / 86400000);
+        const diff = Math.round((end - start) / 86400000);
         if (!Number.isFinite(diff) || diff < 1) {
             throw new Error('returnDate must be after departDate');
         }
