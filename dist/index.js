@@ -16,6 +16,7 @@ import { AccommodationService } from './services/AccommodationService.js';
 import { CurrencyService } from './services/CurrencyService.js';
 import { WeatherService } from './services/WeatherService.js';
 import { PlacesService } from './services/PlacesService.js';
+import { TripPlannerService } from './services/TripPlannerService.js';
 
 const app = express();
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'] }));
@@ -77,7 +78,7 @@ app.get('/sse', async (req, res) => {
   const transport = new SSEServerTransport('/message', res);
 
   const server = new Server(
-    { name: 'travel-planner-server', version: '0.2.0' },
+    { name: 'travel-planner-server', version: '0.3.0' },
     { capabilities: { tools: {} } }
   );
 
@@ -86,6 +87,28 @@ app.get('/sse', async (req, res) => {
 
     return {
       tools: [
+        {
+          name: 'build_trip_data',
+          description: 'Build a complete live trip-data bundle. For a complete first-trip plan, use this tool: it orchestrates the FlightService, AccommodationService, PlacesService (attractions and restaurants), WeatherService, and generic budget calculator together. CurrencyService is also called when currencyFrom and currencyTo are provided. Never treat the generic budget as a live quote.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              origin: { type: 'string', description: 'Origin IATA airport code, e.g. MAA' },
+              destinationAirport: { type: 'string', description: 'Destination IATA airport code, e.g. CMB' },
+              destinationCity: { type: 'string', description: 'Destination city, e.g. Colombo' },
+              destinationCountry: { type: 'string', description: 'Destination country, e.g. Sri Lanka' },
+              departDate: { type: 'string', description: 'Departure date in YYYY-MM-DD format' },
+              returnDate: { type: 'string', description: 'Return date in YYYY-MM-DD format' },
+              passengers: { type: 'number', minimum: 1, default: 1 },
+              budgetLevel: { type: 'string', enum: ['budget', 'mid-range', 'luxury'], default: 'budget' },
+              currencyFrom: { type: 'string', description: 'Optional 3-letter currency to convert from' },
+              currencyTo: { type: 'string', description: 'Optional 3-letter currency to convert to' },
+              currencyAmount: { type: 'number', minimum: 0, default: 1 },
+              placesRadius: { type: 'number', minimum: 1, default: 5000 }
+            },
+            required: ['origin', 'destinationAirport', 'destinationCity', 'destinationCountry', 'departDate', 'returnDate', 'passengers', 'budgetLevel']
+          }
+        },
         {
           name: 'search_flights',
           description: 'Search live flight prices. Use IATA airport codes for origin and destination and YYYY-MM-DD dates.',
@@ -183,6 +206,23 @@ app.get('/sse', async (req, res) => {
     console.error('📦 TOOL ARGS:', JSON.stringify(args));
 
     try {
+      if (name === 'build_trip_data') {
+        for (const field of ['origin', 'destinationAirport', 'destinationCity', 'destinationCountry', 'departDate', 'returnDate']) {
+          requireString(args, field);
+        }
+        if (!isValidDate(args.departDate) || !isValidDate(args.returnDate)) {
+          throw new Error('Trip dates must be YYYY-MM-DD');
+        }
+        if (new Date(`${args.returnDate}T00:00:00Z`) <= new Date(`${args.departDate}T00:00:00Z`)) {
+          throw new Error('returnDate must be after departDate');
+        }
+        const passengers = requireNumber(args, 'passengers', 1);
+        if (!['budget', 'mid-range', 'luxury'].includes(args.budgetLevel)) {
+          throw new Error('budgetLevel must be budget, mid-range, or luxury');
+        }
+        return textResult(await tripPlannerService.buildTripData({ ...args, passengers }));
+      }
+
       if (name === 'search_flights') {
         requireString(args, 'origin');
         requireString(args, 'destination');
@@ -297,7 +337,6 @@ const handleMessage = async (req, res) => {
 app.post('/message', handleMessage);
 app.post('/sse', handleMessage);
 
-// Generic estimate only. Never present this as live booking data.
 async function calculateBudget(params) {
   console.error('💰 Calculating generic budget estimate:', params);
 
@@ -334,6 +373,16 @@ async function calculateBudget(params) {
     summary: `Generic ${budgetLevel} estimate for ${travelers} traveler(s) for ${duration} day(s).`
   };
 }
+
+// The composite service is created after calculateBudget is declared.
+const tripPlannerService = new TripPlannerService({
+  flightService,
+  accommodationService,
+  placesService,
+  weatherService,
+  currencyService,
+  calculateBudget
+});
 
 const PORT = Number(process.env.PORT || 3000);
 app.listen(PORT, () => {
