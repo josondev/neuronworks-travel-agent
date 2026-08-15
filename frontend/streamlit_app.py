@@ -80,7 +80,7 @@ with st.sidebar:
     st.header("Configuration")
     server_url = st.text_input("MCP Server URL", value="https://neuronworks-travel-agent.onrender.com/sse")
 
-    # GROQ_API_KEY: still needed for the fast REUSE/FRESH classifier (openai/gpt-oss-20b on Groq).
+    # GROQ_API_KEY: for the fast classifier (openai/gpt-oss-20b)
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         api_key = st.text_input("Groq API Key", type="password")
@@ -91,9 +91,7 @@ with st.sidebar:
 
     os.environ["GROQ_API_KEY"] = api_key
 
-    # HF_TOKEN: needed for the main agent LLM, now hosted on Hugging Face
-    # (meta-llama/Llama-3.3-70B-Instruct is a gated model — your token must
-    # have been granted access on the model page first).
+    # HF_TOKEN: needed for the main agent LLM (Llama 3.3 70B Instruct on Hugging Face)
     hf_token = os.environ.get("HF_TOKEN")
     if not hf_token:
         hf_token = st.text_input("Hugging Face Token", type="password")
@@ -119,13 +117,10 @@ def create_pydantic_model_from_schema(name, schema):
             fields[field_name] = (field_type, Field(description=field_info.get("description", "")))
     return create_model(f"{name}Input", **fields)
 
-# --- SYSTEM PROMPT (The Anti-Hallucination Guard) ---
-# --- SYSTEM PROMPT (Strictly aligned with your Service Code) ---
 # --- GET CURRENT DATE ---
-current_date = datetime.now().strftime("%Y-%m-%d") # e.g., "2026-02-08"
+current_date = datetime.now().strftime("%Y-%m-%d")
 
-# --- SYSTEM PROMPT (Dynamic Date Injection) ---
-# --- SYSTEM PROMPT (Robust & Anti-Hallucination) ---
+# --- SYSTEM PROMPT ---
 SYSTEM_PROMPT = f"""
 You are an expert, factual AI Travel Agent. Your goal is to plan realistic, bookable trips using **only** real-time data from your tools.
 
@@ -151,7 +146,6 @@ You are an expert, factual AI Travel Agent. Your goal is to plan realistic, book
   - "London" $\rightarrow$ `LHR` or `LGW`
   - "Madurai" $\rightarrow$ `IXM`
   - "Chennai" $\rightarrow$ `MAA`
-  - *Internal Knowledge:* Use your training data to find codes for other cities.
 - **DATES:** Format strictly as `YYYY-MM-DD`.
 
 #### 2. 🏨 HOTELS (`Google Hotels`)
@@ -172,37 +166,26 @@ You are an expert, factual AI Travel Agent. Your goal is to plan realistic, book
 
 #### 4. 💰 BUDGET (`calculate_trip_budget`)
 - **EXECUTION:** Call this tool **LAST**, only on the *first* full plan for a trip — not on every follow-up.
-- **VALID `budgetLevel` VALUES:** the tool only accepts exactly `budget`, `mid-range`, or `luxury` (nothing else — e.g. NOT `"low"`, `"cheap"`). Map the user's wording: "cheap/low/minimum" → `budget`, "moderate/comfortable" → `mid-range`, "luxury/high-end" → `luxury`. If you send an invalid value, the tool silently falls back to `mid-range` pricing, which will be wrong.
-- **IMPORTANT LIMITATION:** this tool does NOT accept real flight/hotel prices as input — it only returns a generic estimate for the chosen `budgetLevel`. Do NOT claim you "fed it the real price." Instead, report the tool's estimate labeled as "Generic estimate," and **separately** compute and clearly label a "Actual total (from real data found)" by summing the exact flight price + (hotel nightly price × nights) + a stated daily-expense estimate. When the user asks you to minimize cost, the actual total is what should change — the generic tool estimate will not.
+- **VALID `budgetLevel` VALUES:** the tool only accepts exactly `budget`, `mid-range`, or `luxury`.
+- **IMPORTANT LIMITATION:** Report the tool's generic estimate and **separately** compute an "Actual total (from real data found)".
 
-### 🔁 FOLLOW-UP QUESTIONS (DO NOT RE-CALL TOOLS UNNECESSARILY)
-- Prior tool results for this conversation are included below under `PRIOR TRIP DATA`, if any exist. Treat that as ground truth.
-- If the user's follow-up can be answered by re-reasoning over `PRIOR TRIP DATA` (e.g. "pick the cheapest hotel from that list," "minimize cost," "which one is best for families") — DO NOT call any tool again. Just re-analyze the existing data and answer directly.
-- Only call a tool again if the user asks for something the existing data cannot answer — a different city, different dates, a different category of place, or explicitly asks you to "search again" / "check for more/cheaper options."
+### 🔁 FOLLOW-UP QUESTIONS
+- Prior tool results are included under `PRIOR TRIP DATA`.
+- If a follow-up can be answered from `PRIOR TRIP DATA`, DO NOT call any tool again.
 
 ### 📝 OUTPUT FORMAT
 1. **Summary:** A quick breakdown of flight options and hotel recommendations.
 2. **Itinerary:** A day-by-day plan using the specific *Attractions* found by `search_places`.
-3. **Budget:** Both the generic tool estimate and the actual computed total (see above).
+3. **Budget:** Both the generic tool estimate and the actual computed total.
 4. **Disclaimer:** "Prices and availability are subject to change."
 """
 
-# --- SEMANTIC GATE (replaces keyword matching) ---
-# A single fast, cheap model call that decides whether this turn needs new
-# tool data or can be answered from what's already been fetched. Uses
-# openai/gpt-oss-20b on Groq: ~1000 tok/s and priced for exactly this kind
-# of high-frequency, low-output classification (single-word answer, so the
-# added latency is small — typically well under the latency of even one
-# real tool call, let alone four).
+# --- SEMANTIC GATE ---
 CLASSIFIER_MODEL = "openai/gpt-oss-20b"
 
 async def needs_fresh_tool_data(latest_user_msg: str, trip_data: dict, last_assistant_msg: str) -> bool:
-    """Returns True if this turn should have tools available, False if it
-    can be answered purely by re-reasoning over trip_data. Fails open (True)
-    on any error or ambiguous output, since an unnecessary tool call is far
-    cheaper than a stranded, blank answer."""
     if not trip_data:
-        return True  # nothing fetched yet — always allow the first search
+        return True 
 
     available = ", ".join(trip_data.keys())
     classifier_prompt = f"""You are a binary router for a travel-planning agent.
@@ -212,10 +195,7 @@ Assistant's last answer (truncated): {last_assistant_msg[:500]}
 User's new message: {latest_user_msg}
 
 Can the user's new message be fully answered by re-analyzing the data already
-fetched (e.g. picking a cheapest option, listing alternatives from a list
-already returned, comparing items already found)? Or does it require fetching
-NEW data — a different city/country, different dates, a different tool
-category, or anything not already covered above?
+fetched? Or does it require fetching NEW data?
 
 Reply with exactly one word, nothing else: REUSE or FRESH."""
 
@@ -225,8 +205,7 @@ Reply with exactly one word, nothing else: REUSE or FRESH."""
         verdict = (result.content or "").strip().upper()
         return not verdict.startswith("REUSE")
     except Exception:
-        return True  # classifier failed — fail open, keep tools available
-
+        return True 
 
 # --- CORE LOGIC ---
 async def run_agent(chat_history, trip_data, chat_container):
@@ -260,28 +239,16 @@ async def run_agent(chat_history, trip_data, chat_container):
             
             status_text.info(f"🛠️ Found {len(langchain_tools)} tools. Thinking...")
 
-            # 3. Initialize LLM
-            # Main agent LLM now runs on Hugging Face's serverless Inference
-            # Providers instead of Groq (llama-3.3-70b-versatile was
-            # decommissioned on Groq). meta-llama/Llama-3.3-70B-Instruct is a
-            # GATED model on Hugging Face — the account behind HF_TOKEN must
-            # have requested and been granted access on the model page, or
-            # every call below will fail with a 403.
+            # 3. Initialize Hugging Face LLM (meta-llama/Llama-3.3-70B-Instruct)
             hf_endpoint = HuggingFaceEndpoint(
                 repo_id="meta-llama/Llama-3.3-70B-Instruct",
                 task="text-generation",
-                max_new_tokens=1024,
-                temperature=0.01,  # HF endpoint requires temperature > 0
+                max_new_tokens=2048,
+                temperature=0.01,
                 huggingfacehub_api_token=os.environ["HF_TOKEN"],
             )
             llm = ChatHuggingFace(llm=hf_endpoint)
 
-            # --- HARD GATE: decide in code, not just in the prompt, whether this turn
-            # is even allowed to call tools. A system-prompt instruction like "don't
-            # call tools on follow-ups" is only a suggestion the model can ignore.
-            # The decision itself is semantic (via needs_fresh_tool_data), not a
-            # keyword match, so it generalizes to phrasing we didn't anticipate
-            # ("compare that to Singapore" correctly reads as needing fresh data).
             latest_user_msg = next(
                 (m["content"] for m in reversed(chat_history) if m["role"] == "user"), ""
             )
@@ -292,10 +259,7 @@ async def run_agent(chat_history, trip_data, chat_container):
 
             llm_active = llm.bind_tools(langchain_tools) if needs_fresh_search else llm
 
-            # 4. Construct Message History with System Prompt
-            # Replay the full prior conversation (not just the latest turn) so the
-            # model retains context across messages. Cap it to the last N turns to
-            # keep token usage / latency bounded on long sessions.
+            # 4. Construct Message History
             MAX_HISTORY_TURNS = 12
             trimmed_history = [m for m in chat_history if m["role"] in ("user", "assistant")][-MAX_HISTORY_TURNS:]
 
@@ -326,7 +290,6 @@ async def run_agent(chat_history, trip_data, chat_container):
             if ai_msg.tool_calls:
                 status_text.info(f"🤔 Decided to call {len(ai_msg.tool_calls)} tools...")
                 
-                # Execute Tools
                 for tool_call in ai_msg.tool_calls:
                     selected_tool = next((t for t in langchain_tools if t.name == tool_call['name']), None)
                     if selected_tool:
@@ -334,12 +297,10 @@ async def run_agent(chat_history, trip_data, chat_container):
                             st.write(f"🛠️ **Executing:** `{tool_call['name']}`")
                             st.json(tool_call['args'])
                         
-                        # EXECUTE
                         tool_result = await selected_tool.coroutine(**tool_call['args'])
                         content_text = tool_result.content[0].text
                         
-                        # --- DEBUG: CHECK FOR EMPTY DATA ---
-                        if content_text == "[]" or content_text == "{}" or "error" in content_text.lower():
+                        if content_text in ("[]", "{}") or "error" in content_text.lower():
                              st.warning(f"⚠️ Tool {tool_call['name']} returned no data. Expect limited results.")
 
                         tool_msg = ToolMessage(
@@ -349,7 +310,6 @@ async def run_agent(chat_history, trip_data, chat_container):
                         )
                         messages.append(tool_msg)
 
-                        # Persist for future turns (keyed by tool name; last call wins)
                         try:
                             trip_data[tool_call['name']] = json.loads(content_text)
                         except (ValueError, TypeError):
@@ -372,14 +332,11 @@ async def run_agent(chat_history, trip_data, chat_container):
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "system", "content": "I am your AI Travel Agent. Where would you like to go?"}]
 
-# Raw tool results from prior turns, keyed by tool name -> last result JSON.
-# This is what lets the model answer follow-ups ("minimize cost", "pick the cheapest")
-# without re-calling every tool from scratch each time.
 if "trip_data" not in st.session_state:
     st.session_state.trip_data = {}
 
 for message in st.session_state.messages:
-    if message["role"] != "system": # Don't show system prompt in chat
+    if message["role"] != "system":
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
