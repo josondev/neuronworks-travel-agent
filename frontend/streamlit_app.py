@@ -112,7 +112,7 @@ MULTI-LEG (MULTI-HOP) RULES
 """
 
 def model():
-    return ChatGroq(model="openai/gpt-oss-20b", temperature=0, max_tokens=180)
+    return ChatGroq(model="openai/gpt-oss-20b", temperature=0, max_tokens=500)
 
 def iso(value: Any):
     try:
