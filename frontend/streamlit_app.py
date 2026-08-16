@@ -58,9 +58,6 @@ if "trip_collection" not in st.session_state:
     st.session_state.trip_collection = {}
 
 
-# ---------------------------------------------------------------------
-# Structured semantic router
-# ---------------------------------------------------------------------
 class Destination(BaseModel):
     city: str = Field(description="Destination city name only. Do not output an airport code.")
     country: Optional[str] = Field(default=None, description="Destination country when confidently known.")
@@ -85,14 +82,6 @@ def model(max_tokens=500):
         model="openai/gpt-oss-20b",
         temperature=0,
         max_tokens=max_tokens,
-    )
-
-
-def structured_router():
-    # Groq supports strict structured output for openai/gpt-oss-20b.
-    return model(max_tokens=600).with_structured_output(
-        RouterDecision,
-        method="function_calling",
     )
 
 
@@ -172,6 +161,7 @@ You are an expert, factual AI Travel Agent and the semantic routing brain of a l
 ### FLIGHT RULE
 - The MCP flight service resolves origin/destination cities to practical airport IATA codes server-side and passes those codes to SerpApi.
 - The frontend/router must never perform airport-code lookup.
+- IATA codes are used only at the MCP/FlightService → SerpApi boundary.
 
 ### FOLLOW-UP / CONTEXT RULES
 - Use the full conversation and stored trip context.
@@ -188,7 +178,7 @@ You are an expert, factual AI Travel Agent and the semantic routing brain of a l
 
 ### BUDGET RULES
 - budgetLevel must be exactly budget, mid-range or luxury.
-- `calculate_trip_budget` is generic planning data only.
+- calculate_trip_budget is generic planning data only.
 - A live subtotal must be computed separately from returned flight + hotel prices.
 
 ### REQUIRED ROUTER ACTIONS
@@ -196,18 +186,30 @@ You are an expert, factual AI Travel Agent and the semantic routing brain of a l
 - REUSE: answer from stored MCP data.
 - ASK: information truly cannot be recovered from the conversation or stored trips.
 
-### REQUIRED STRUCTURE
-Return a structured RouterDecision object. Do not write a travel-plan answer here.
+### REQUIRED OUTPUT
+Return ONLY one valid JSON object. Do NOT call tools. Do NOT use markdown or code fences. Do NOT answer the travel request itself.
+
+Exact JSON shape:
+{{
+  "action": "FETCH | REUSE | ASK",
+  "missing": null,
+  "question": null,
+  "origin": null,
+  "destinations": [{{"city": "", "country": null}}],
+  "departDate": null,
+  "returnDate": null,
+  "passengers": null,
+  "budgetLevel": null,
+  "replace_active": false,
+  "compare_with_active": false
+}}
 
 Examples:
 1. Complete first request for Chennai → Madurai, Aug 20–25, 1 traveler, budget:
-   FETCH, origin=Chennai, destinations=[Madurai], dates preserved, replace_active=true.
-2. "compare the same for Coimbatore and tell me which is better":
-   FETCH, destinations=[Coimbatore], compare_with_active=true, replace_active=false, inherit all other trip parameters.
-3. "do the same for Madurai, Kodaikanal and Ooty":
-   FETCH, destinations=[Madurai, Kodaikanal, Ooty], inherit origin/dates/travelers/budget.
-4. "which hotel is cheapest in Madurai?" when Madurai exists in stored trips:
-   REUSE, question=<user question>.
+{{"action":"FETCH","missing":null,"question":null,"origin":"Chennai","destinations":[{{"city":"Madurai","country":"India"}}],"departDate":"2026-08-20","returnDate":"2026-08-25","passengers":1,"budgetLevel":"budget","replace_active":true,"compare_with_active":false}}
+2. "compare the same for Coimbatore and tell me which is better": FETCH, destinations=[Coimbatore], compare_with_active=true, replace_active=false, inheriting the active trip's origin/dates/travelers/budget.
+3. "do the same for Madurai, Kodaikanal and Ooty": FETCH with all three destinations, inheriting origin/dates/travelers/budget.
+4. "which hotel is cheapest in Madurai?" when Madurai exists in stored trips: REUSE with question set to the user's question.
 
 ### ACTIVE TRIP
 {active_trip_summary()}
@@ -220,20 +222,49 @@ Examples:
 """
 
 
-async def route_request():
+def extract_router_json(raw):
+    text = str(raw or "").strip()
+    if not text:
+        return None
     try:
-        router = structured_router()
-        return await router.ainvoke([HumanMessage(content=SYSTEM_PROMPT)])
-    except Exception as first_error:
-        # One retry with the same strict schema. We fail only after both calls,
-        # and expose the real error instead of pretending information is missing.
+        value = json.loads(text)
+        return value if isinstance(value, dict) else None
+    except json.JSONDecodeError:
+        pass
+    for block in re.findall(r"```(?:json)?\s*(.*?)\s*```", text, re.I | re.S):
         try:
-            retry_prompt = SYSTEM_PROMPT + "\n\nReturn the RouterDecision now. Do not answer the trip itself."
-            return await structured_router().ainvoke([HumanMessage(content=retry_prompt)])
-        except Exception as second_error:
-            raise RuntimeError(
-                f"Semantic router failed twice: {type(second_error).__name__}: {second_error}"
-            ) from second_error
+            value = json.loads(block.strip())
+            if isinstance(value, dict):
+                return value
+        except json.JSONDecodeError:
+            continue
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[i:])
+            if isinstance(value, dict):
+                return value
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+async def route_request():
+    last_error = None
+    prompt = SYSTEM_PROMPT
+    for attempt in range(2):
+        try:
+            result = await model(max_tokens=600).ainvoke([HumanMessage(content=prompt)])
+            parsed = extract_router_json(result.content)
+            if isinstance(parsed, dict) and parsed.get("action") in {"FETCH", "REUSE", "ASK"}:
+                return RouterDecision(**parsed)
+            last_error = ValueError("Router returned invalid or incomplete JSON")
+        except Exception as exc:
+            last_error = exc
+        prompt = SYSTEM_PROMPT + "\n\nRETRY: Output ONLY the JSON object matching the exact schema. No tool calls. No prose."
+    raise RuntimeError(f"Semantic router failed twice: {type(last_error).__name__}: {last_error}")
 
 
 def validate_request(request):
@@ -250,10 +281,7 @@ def validate_request(request):
 
 
 async def mcp_trip(session, request):
-    result = await asyncio.wait_for(
-        session.call_tool("build_trip_data", arguments=request),
-        timeout=20,
-    )
+    result = await asyncio.wait_for(session.call_tool("build_trip_data", arguments=request), timeout=20)
     if not result.content:
         raise RuntimeError("MCP returned no content")
     payload = json.loads(result.content[0].text)
@@ -268,10 +296,7 @@ def listv(services, key):
 
 
 def clean_attractions(items):
-    deny = re.compile(
-        r"\b(road|street|highway|lane|path|junction|roundabout|bus\s*stop|bus\s*station|railway|parking|signal|flyover|underpass|bypass|overpass|salai|theru|nagar|colony|layout|township|extension|ward|sector|block|circle|chowk|hospital|water\s*works|car\s*shelter)\b|நகரம்|சாலை|தெரு|சந்து|மாவட்டம்|மாநகராட்சி",
-        re.I,
-    )
+    deny = re.compile(r"\b(road|street|highway|lane|path|junction|roundabout|bus\s*stop|bus\s*station|railway|parking|signal|flyover|underpass|bypass|overpass|salai|theru|nagar|colony|layout|township|extension|ward|sector|block|circle|chowk|hospital|water\s*works|car\s*shelter)\b|நகரம்|சாலை|தெரு|சந்து|மாவட்டம்|மாநகராட்சி", re.I)
     bad = ("administrative", "populated_place", "residential", "postcode", "suburb", "neighbourhood", "neighborhood", "locality", "office", "hospital")
     out, seen = [], set()
     for item in items if isinstance(items, list) else []:
@@ -280,11 +305,7 @@ def clean_attractions(items):
         name = str(item.get("name", "")).strip()
         cats = [str(c).lower() for c in item.get("categories", [])]
         key = re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
-        allowed = any(
-            c.startswith("tourism.") or "museum" in c or "culture" in c or "place_of_worship" in c
-            or "historic" in c or "heritage" in c or c.startswith("natural") or "park" in c
-            for c in cats
-        )
+        allowed = any(c.startswith("tourism.") or "museum" in c or "culture" in c or "place_of_worship" in c or "historic" in c or "heritage" in c or c.startswith("natural") or "park" in c for c in cats)
         if name and key not in seen and not deny.search(name) and not any(any(b in c for b in bad) for c in cats) and allowed:
             seen.add(key)
             out.append(item)
@@ -347,12 +368,7 @@ def render_trip(trip):
     start, end = iso(req.get("departDate")), iso(req.get("returnDate"))
     nights = int(req.get("durationNights") or ((end - start).days if start and end else 0))
     days = nights + 1
-    lines = [
-        "## ✈️ Trip at a glance", "",
-        f"**{req.get('origin','—')} → {req.get('destinationCity','—')}, {req.get('destinationCountry','')}**",
-        f"**{req.get('departDate','—')} → {req.get('returnDate','—')} · {req.get('travelers',1)} traveler(s) · {nights} night(s) / {days} calendar day(s)**",
-        f"Budget: **{req.get('budgetLevel','budget')}**", "", "## 🛫 Flights", ""
-    ]
+    lines = ["## ✈️ Trip at a glance", "", f"**{req.get('origin','—')} → {req.get('destinationCity','—')}, {req.get('destinationCountry','')}**", f"**{req.get('departDate','—')} → {req.get('returnDate','—')} · {req.get('travelers',1)} traveler(s) · {nights} night(s) / {days} calendar day(s)**", f"Budget: **{req.get('budgetLevel','budget')}**", "", "## 🛫 Flights", ""]
     if flights:
         lines += ["| Airline | Price | Departure | Arrival | Duration | Stops |", "|---|---:|---|---|---:|---:|"]
         for flight in flights[:5]:
