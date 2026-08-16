@@ -846,6 +846,7 @@ input_col, btn_col = st.columns([6, 1])
 
 with input_col:
     user_input = st.text_area(
+        "Where do you want to travel?",   # ← this is the `label` parameter
         placeholder="Where do you want to go?  e.g., Plan a 3-day trip from Chennai to Goa...",
         height=68,
         key="chat_input_area",
