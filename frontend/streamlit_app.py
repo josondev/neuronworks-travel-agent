@@ -3,6 +3,7 @@ import asyncio
 import os
 import json
 import nest_asyncio
+import ast
 from contextlib import AsyncExitStack
 from pydantic import create_model, Field
 from datetime import datetime
@@ -17,21 +18,135 @@ from langchain_core.tools import StructuredTool
 nest_asyncio.apply()
 
 # =============================================================================
-# UI & STYLING
+# UI & STYLING (Dark + Light mode)
 # =============================================================================
 st.set_page_config(page_title="Neuronworks Travel Agent", page_icon="✈️", layout="wide")
 
 st.markdown("""
 <style>
-:root{--bg:#080b14;--border:rgba(255,255,255,.10);--muted:#94a3b8}
-.stApp{background:radial-gradient(circle at 10% 0%,rgba(37,99,235,.42),transparent 34%),radial-gradient(circle at 90% 10%,rgba(124,58,237,.36),transparent 32%),var(--bg)}
-.block-container{max-width:1180px;padding-top:5rem;padding-bottom:6rem}
-.hero{padding:26px 28px;border-radius:22px;margin-bottom:18px;background:linear-gradient(135deg,rgba(37,99,235,.28),rgba(124,58,237,.22));border:1px solid var(--border)}
-.hero h1{margin:0;color:#fff;font-size:2.2rem}.hero p{margin:8px 0;color:#cbd5e1}
-.pill{display:inline-block;padding:5px 11px;border-radius:999px;background:rgba(255,255,255,.09);color:#e2e8f0;font-size:.75rem;border:1px solid var(--border)}
-div[data-testid="stChatMessage"]{border:1px solid var(--border);border-radius:18px;padding:1rem 1.1rem;margin:.7rem 0;background:rgba(15,23,42,.82)}
-div[data-testid="stStatus"]{border:1px solid var(--border);border-radius:12px;margin:0.5rem 0;background:rgba(30,41,59,0.6)}
-div[data-testid="stStatus"] summary{padding:0.5rem 1rem;font-weight:500;color:#94a3b8}
+/* ===== DARK MODE (default) ===== */
+:root {
+    --bg: #080b14;
+    --bg-secondary: rgba(15, 23, 42, 0.82);
+    --border: rgba(255, 255, 255, 0.10);
+    --text-primary: #f1f5f9;
+    --text-secondary: #cbd5e1;
+    --text-muted: #94a3b8;
+    --hero-bg: linear-gradient(135deg, rgba(37, 99, 235, 0.28), rgba(124, 58, 237, 0.22));
+    --pill-bg: rgba(255, 255, 255, 0.09);
+    --pill-text: #e2e8f0;
+    --status-bg: rgba(30, 41, 59, 0.6);
+    --info-bg: rgba(37, 99, 235, 0.15);
+    --info-border: rgba(37, 99, 235, 0.4);
+    --info-text: #93c5fd;
+}
+
+/* ===== LIGHT MODE ===== */
+@media (prefers-color-scheme: light) {
+    :root {
+        --bg: #f8fafc;
+        --bg-secondary: rgba(255, 255, 255, 0.95);
+        --border: rgba(0, 0, 0, 0.12);
+        --text-primary: #0f172a;
+        --text-secondary: #334155;
+        --text-muted: #64748b;
+        --hero-bg: linear-gradient(135deg, rgba(37, 99, 235, 0.10), rgba(124, 58, 237, 0.08));
+        --pill-bg: rgba(0, 0, 0, 0.06);
+        --pill-text: #334155;
+        --status-bg: rgba(241, 245, 249, 0.95);
+        --info-bg: rgba(37, 99, 235, 0.08);
+        --info-border: rgba(37, 99, 235, 0.25);
+        --info-text: #1d4ed8;
+    }
+}
+
+.stApp {
+    background: radial-gradient(circle at 10% 0%, rgba(37, 99, 235, 0.42), transparent 34%),
+                radial-gradient(circle at 90% 10%, rgba(124, 58, 237, 0.36), transparent 32%),
+                var(--bg);
+}
+
+@media (prefers-color-scheme: light) {
+    .stApp {
+        background: radial-gradient(circle at 10% 0%, rgba(37, 99, 235, 0.08), transparent 34%),
+                    radial-gradient(circle at 90% 10%, rgba(124, 58, 237, 0.06), transparent 32%),
+                    var(--bg);
+    }
+}
+
+.block-container { max-width: 1180px; padding-top: 5rem; padding-bottom: 6rem; }
+
+.hero {
+    padding: 26px 28px; border-radius: 22px; margin-bottom: 18px;
+    background: var(--hero-bg); border: 1px solid var(--border);
+}
+.hero h1 { margin: 0; color: var(--text-primary); font-size: 2.2rem; }
+.hero p { margin: 8px 0; color: var(--text-secondary); }
+
+.pill {
+    display: inline-block; padding: 5px 11px; border-radius: 999px;
+    background: var(--pill-bg); color: var(--pill-text);
+    font-size: 0.75rem; border: 1px solid var(--border);
+}
+
+div[data-testid="stChatMessage"] {
+    border: 1px solid var(--border); border-radius: 18px;
+    padding: 1rem 1.1rem; margin: 0.7rem 0; background: var(--bg-secondary);
+}
+div[data-testid="stChatMessage"] p,
+div[data-testid="stChatMessage"] li,
+div[data-testid="stChatMessage"] span,
+div[data-testid="stChatMessage"] h1,
+div[data-testid="stChatMessage"] h2,
+div[data-testid="stChatMessage"] h3,
+div[data-testid="stChatMessage"] h4,
+div[data-testid="stChatMessage"] strong,
+div[data-testid="stChatMessage"] em,
+div[data-testid="stChatMessage"] code {
+    color: var(--text-primary) !important;
+}
+
+div[data-testid="stStatus"] {
+    border: 1px solid var(--border); border-radius: 12px;
+    margin: 0.5rem 0; background: var(--status-bg);
+}
+div[data-testid="stStatus"] summary {
+    padding: 0.5rem 1rem; font-weight: 500; color: var(--text-muted);
+}
+div[data-testid="stStatus"] p,
+div[data-testid="stStatus"] span,
+div[data-testid="stStatus"] pre,
+div[data-testid="stStatus"] code {
+    color: var(--text-primary) !important;
+}
+
+div[data-testid="stAlert"] {
+    background: var(--info-bg) !important;
+    border: 1px solid var(--info-border) !important;
+    border-radius: 12px !important;
+}
+div[data-testid="stAlert"] p,
+div[data-testid="stAlert"] span {
+    color: var(--info-text) !important;
+}
+
+section[data-testid="stSidebar"] {
+    background: var(--bg-secondary); border-right: 1px solid var(--border);
+}
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] p,
+section[data-testid="stSidebar"] span,
+section[data-testid="stSidebar"] h1,
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] h3 {
+    color: var(--text-primary) !important;
+}
+
+input, textarea {
+    color: var(--text-primary) !important;
+    background: var(--bg-secondary) !important;
+    border: 1px solid var(--border) !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -66,9 +181,13 @@ with st.sidebar:
 # =============================================================================
 # HELPERS
 # =============================================================================
-
-# Store raw MCP schemas globally so we can normalize args against them
 _mcp_tool_schemas: dict = {}
+
+# Timeout constants (seconds)
+MCP_CONNECT_TIMEOUT = 15
+MCP_TOOL_TIMEOUT = 30
+LLM_INVOKE_TIMEOUT = 60
+LLM_STREAM_TIMEOUT = 90
 
 
 def create_pydantic_model_from_schema(name, schema):
@@ -90,9 +209,11 @@ def create_pydantic_model_from_schema(name, schema):
 def normalize_tool_args(tool_name: str, args: dict) -> dict:
     """
     Coerce LLM-generated arguments to match the MCP tool's expected JSON schema.
-    Fixes common mistakes:
+    Handles:
       - string "Goa" → ["Goa"] when schema expects array
-      - string "4" → 4 when schema expects integer/number
+      - string "['Goa', 'Pondicherry']" → ["Goa", "Pondicherry"] (stringified list)
+      - string "[\\"Goa\\", \\"Pondicherry\\"]" → ["Goa", "Pondicherry"] (JSON string)
+      - string "4" → 4 when schema expects integer
       - string "true" → True when schema expects boolean
     """
     schema = _mcp_tool_schemas.get(tool_name, {})
@@ -104,27 +225,41 @@ def normalize_tool_args(tool_name: str, args: dict) -> dict:
             continue
         expected_type = properties[key].get("type", "")
 
-        # String → Array coercion
-        if expected_type == "array" and isinstance(value, str):
-            normalized[key] = [value]
-        elif expected_type == "array" and isinstance(value, list):
-            pass  # already correct
+        # --- Array coercion ---
+        if expected_type == "array":
+            if isinstance(value, str):
+                # Try JSON parse first: '["Goa", "Pondicherry"]'
+                try:
+                    parsed = json.loads(value)
+                    if isinstance(parsed, list):
+                        normalized[key] = parsed
+                        continue
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                # Try Python literal parse: "['Goa', 'Pondicherry']"
+                try:
+                    parsed = ast.literal_eval(value)
+                    if isinstance(parsed, list):
+                        normalized[key] = parsed
+                        continue
+                except (ValueError, SyntaxError):
+                    pass
+                # Fallback: wrap single string in array
+                normalized[key] = [value]
+            elif isinstance(value, list):
+                pass  # already correct
 
-        # String → Integer coercion
+        # --- Integer coercion ---
         elif expected_type == "integer" and isinstance(value, str):
-            try:
-                normalized[key] = int(value)
-            except ValueError:
-                pass
+            try: normalized[key] = int(value)
+            except ValueError: pass
 
-        # String → Number coercion
+        # --- Number coercion ---
         elif expected_type == "number" and isinstance(value, str):
-            try:
-                normalized[key] = float(value)
-            except ValueError:
-                pass
+            try: normalized[key] = float(value)
+            except ValueError: pass
 
-        # String → Boolean coercion
+        # --- Boolean coercion ---
         elif expected_type == "boolean" and isinstance(value, str):
             normalized[key] = value.lower() in ("true", "1", "yes")
 
@@ -282,7 +417,7 @@ You are an expert, factual AI Travel Agent. Your goal is to plan realistic, book
 #### 4. 💰 BUDGET (`calculate_trip_budget`)
 - **EXECUTION:** Call this tool **LAST**, only on the *first* full plan for a trip — not on every follow-up.
 - **⚠️ CRITICAL ARGUMENT FORMAT:**
-  - `destinations` MUST be a JSON **array** of strings, e.g. `["Goa"]` or `["Goa", "Pondicherry"]`. NEVER send a plain string like `"Goa"`.
+  - `destinations` MUST be a JSON **array** of strings, e.g. `["Goa"]` or `["Goa", "Pondicherry"]`. NEVER send a plain string like `"Goa"`. NEVER send a stringified list like `"['Goa']"`.
   - `duration` MUST be an **integer** (e.g. `4`), not a string `"4"`.
   - `travelers` MUST be an **integer** (e.g. `1`), not a string `"1"`.
 - **VALID `budgetLevel` VALUES:** the tool only accepts exactly `budget`, `mid-range`, or `luxury` (nothing else — e.g. NOT `"low"`, `"cheap"`). Map the user's wording: "cheap/low/minimum" -> `budget`, "moderate/comfortable" -> `mid-range`, "luxury/high-end" -> `luxury`. If you send an invalid value, the tool silently falls back to `mid-range` pricing, which will be wrong.
@@ -314,22 +449,34 @@ async def run_agent_streaming(
 
     async with AsyncExitStack() as stack:
         try:
-            # --- Connect ---
+            # --- Connect with timeout ---
             yield {"type": "thinking", "message": "🔌 Connecting to MCP server..."}
-            transport = await stack.enter_async_context(sse_client(server_url))
-            session = await stack.enter_async_context(ClientSession(transport[0], transport[1]))
-            if hasattr(session, "initialize"):
-                await session.initialize()
+            try:
+                transport = await asyncio.wait_for(
+                    stack.enter_async_context(sse_client(server_url)),
+                    timeout=MCP_CONNECT_TIMEOUT
+                )
+                session = await asyncio.wait_for(
+                    stack.enter_async_context(ClientSession(transport[0], transport[1])),
+                    timeout=MCP_CONNECT_TIMEOUT
+                )
+                if hasattr(session, "initialize"):
+                    await asyncio.wait_for(session.initialize(), timeout=MCP_CONNECT_TIMEOUT)
+            except asyncio.TimeoutError:
+                yield {"type": "error", "message": f"❌ MCP server connection timed out after {MCP_CONNECT_TIMEOUT}s. Check the server URL."}
+                return
 
             # --- Discover Tools ---
             yield {"type": "thinking", "message": "🔍 Discovering tools..."}
-            mcp_tools = await session.list_tools()
+            try:
+                mcp_tools = await asyncio.wait_for(session.list_tools(), timeout=MCP_CONNECT_TIMEOUT)
+            except asyncio.TimeoutError:
+                yield {"type": "error", "message": "❌ Timed out discovering tools from MCP server."}
+                return
+
             langchain_tools = []
-
             for tool in mcp_tools.tools:
-                # Store raw schema for argument normalization
                 _mcp_tool_schemas[tool.name] = tool.input_schema or {}
-
                 input_model = create_pydantic_model_from_schema(tool.name, tool.input_schema)
                 tool_desc = (tool.description or "")[:150]
                 lc_tool = StructuredTool.from_function(
@@ -338,11 +485,18 @@ async def run_agent_streaming(
                 )
                 langchain_tools.append(lc_tool)
 
+            if not langchain_tools:
+                yield {"type": "error", "message": "❌ No tools discovered from MCP server. The server may be misconfigured."}
+                return
+
             # --- Build Messages ---
             llm = ChatOpenAI(
                 model="meta-llama/llama-3.3-70b-instruct",
                 api_key=api_key, base_url="https://openrouter.ai/api/v1",
-                default_headers={"X-Title": "AI Travel Agent"}, temperature=0
+                default_headers={"X-Title": "AI Travel Agent"},
+                temperature=0,
+                request_timeout=LLM_INVOKE_TIMEOUT,
+                max_retries=2,
             )
             llm_with_tools = llm.bind_tools(langchain_tools)
 
@@ -363,20 +517,27 @@ async def run_agent_streaming(
 
             # --- Agent Loop ---
             max_iterations = 5
-            # Track how many times each tool has been called to prevent infinite retries
             tool_call_counts: dict = {}
             MAX_CALLS_PER_TOOL = 2
 
             for iteration in range(max_iterations):
                 yield {"type": "thinking", "message": f"🤔 Reasoning... (step {iteration + 1})"}
 
-                ai_msg = await llm_with_tools.ainvoke(messages)
+                try:
+                    ai_msg = await asyncio.wait_for(
+                        llm_with_tools.ainvoke(messages),
+                        timeout=LLM_INVOKE_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    yield {"type": "error", "message": f"❌ LLM response timed out after {LLM_INVOKE_TIMEOUT}s. Try a simpler query or retry."}
+                    return
+                except Exception as e:
+                    yield {"type": "error", "message": f"❌ LLM error: {str(e)}"}
+                    return
+
                 messages.append(ai_msg)
 
-                # ---------------------------------------------------------
-                # FIX: OpenRouter sometimes returns tool calls as JSON
-                # string inside content instead of tool_calls array
-                # ---------------------------------------------------------
+                # --- Parse tool calls from content if needed (OpenRouter fix) ---
                 tool_calls_to_execute = list(ai_msg.tool_calls or [])
 
                 if not tool_calls_to_execute and ai_msg.content:
@@ -402,29 +563,31 @@ async def run_agent_streaming(
                 if not tool_calls_to_execute:
                     break
 
-                # Execute each tool call
+                # --- Execute each tool call ---
                 for tool_call in tool_calls_to_execute:
                     tool_name = tool_call['name']
 
-                    # --- Per-tool retry cap ---
+                    # Per-tool retry cap
                     tool_call_counts[tool_name] = tool_call_counts.get(tool_name, 0) + 1
                     if tool_call_counts[tool_name] > MAX_CALLS_PER_TOOL:
-                        skip_msg = f"Skipped {tool_name}: already called {MAX_CALLS_PER_TOOL} times this turn. Moving on."
+                        skip_msg = f"Skipped {tool_name}: already called {MAX_CALLS_PER_TOOL} times this turn."
                         yield {"type": "tool_end", "name": tool_name, "success": False, "preview": skip_msg}
                         messages.append(ToolMessage(
-                            tool_call_id=tool_call['id'],
-                            content=skip_msg, name=tool_name
+                            tool_call_id=tool_call['id'], content=skip_msg, name=tool_name
                         ))
                         continue
 
-                    # --- Normalize arguments against MCP schema ---
+                    # Normalize arguments
                     raw_args = tool_call['args']
                     normalized_args = normalize_tool_args(tool_name, raw_args)
 
                     yield {"type": "tool_start", "name": tool_name, "args": normalized_args}
 
                     try:
-                        result = await session.call_tool(tool_name, arguments=normalized_args)
+                        result = await asyncio.wait_for(
+                            session.call_tool(tool_name, arguments=normalized_args),
+                            timeout=MCP_TOOL_TIMEOUT
+                        )
                         content_text = (
                             result.content[0].text
                             if result.content and hasattr(result.content[0], 'text')
@@ -442,6 +605,13 @@ async def run_agent_streaming(
                         preview = content_text[:300] + "..." if len(content_text) > 300 else content_text
                         yield {"type": "tool_end", "name": tool_name, "success": True, "preview": preview}
 
+                    except asyncio.TimeoutError:
+                        err = f"Tool {tool_name} timed out after {MCP_TOOL_TIMEOUT}s"
+                        messages.append(ToolMessage(
+                            tool_call_id=tool_call['id'], content=err, name=tool_name
+                        ))
+                        yield {"type": "tool_end", "name": tool_name, "success": False, "preview": err}
+
                     except Exception as e:
                         err = f"Error: {str(e)}"
                         messages.append(ToolMessage(
@@ -451,22 +621,47 @@ async def run_agent_streaming(
 
             # --- Stream Final Answer Token-by-Token ---
             full_response = ""
-            async for chunk in llm_with_tools.astream(messages):
-                if chunk.content:
-                    stripped = chunk.content.strip()
-                    if stripped.startswith("[") and '"type": "function"' in stripped:
-                        continue
-                    if stripped.startswith("{") and '"type": "function"' in stripped:
-                        continue
-                    full_response += chunk.content
-                    yield {"type": "token", "content": chunk.content}
+            try:
+                async for chunk in llm_with_tools.astream(messages):
+                    if chunk.content:
+                        stripped = chunk.content.strip()
+                        if stripped.startswith("[") and '"type": "function"' in stripped:
+                            continue
+                        if stripped.startswith("{") and '"type": "function"' in stripped:
+                            continue
+                        full_response += chunk.content
+                        yield {"type": "token", "content": chunk.content}
+            except asyncio.TimeoutError:
+                if full_response:
+                    yield {"type": "done", "full_response": beautify_output(full_response) + "\n\n⚠️ *Response was truncated due to timeout.*"}
+                else:
+                    yield {"type": "error", "message": "❌ LLM streaming timed out with no content generated."}
+                return
+            except Exception as e:
+                if full_response:
+                    yield {"type": "done", "full_response": beautify_output(full_response) + f"\n\n⚠️ *Stream interrupted: {str(e)}*"}
+                else:
+                    yield {"type": "error", "message": f"❌ Streaming error: {str(e)}"}
+                return
+
+            if not full_response.strip():
+                yield {"type": "error", "message": "⚠️ The model returned an empty response. Try rephrasing your query."}
+                return
 
             yield {"type": "done", "full_response": beautify_output(full_response)}
 
+        except asyncio.TimeoutError:
+            yield {"type": "error", "message": "❌ Operation timed out. Please try again."}
         except Exception as e:
             error_str = str(e)
             if "413" in error_str or "rate_limit_exceeded" in error_str:
                 msg = "⚠️ Context limit exceeded. Clear chat memory to continue."
+            elif "401" in error_str or "Unauthorized" in error_str:
+                msg = "❌ Invalid API key. Check your OPENROUTER_API_KEY."
+            elif "429" in error_str or "Too Many Requests" in error_str:
+                msg = "⚠️ Rate limited. Wait a moment and try again."
+            elif "Connection" in error_str or "connect" in error_str.lower():
+                msg = "❌ Network error. Check your internet connection and MCP server URL."
             else:
                 msg = f"❌ Error: {error_str}"
             yield {"type": "error", "message": msg}
