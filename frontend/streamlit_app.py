@@ -4,7 +4,7 @@ import os
 import re
 from contextlib import AsyncExitStack
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, Literal, Optional
 
 import nest_asyncio
 import streamlit as st
@@ -12,13 +12,14 @@ from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
 from mcp import ClientSession
 from mcp.client.sse import sse_client
+from pydantic import BaseModel, Field
 
 nest_asyncio.apply()
 st.set_page_config(page_title="Neuronworks Travel Agent", page_icon="✈️", layout="wide")
 
 st.markdown("""
 <style>
-:root{--bg:#080b14;--border:rgba(255,255,255,.10)}
+:root{--bg:#080b14;--border:rgba(255,255,255,.10);--muted:#94a3b8}
 .stApp{background:radial-gradient(circle at 10% 0%,rgba(37,99,235,.42),transparent 34%),radial-gradient(circle at 90% 10%,rgba(124,58,237,.36),transparent 32%),var(--bg)}
 .block-container{max-width:1180px;padding-top:5rem;padding-bottom:6rem}
 .hero{padding:26px 28px;border-radius:22px;margin-bottom:18px;background:linear-gradient(135deg,rgba(37,99,235,.28),rgba(124,58,237,.22));border:1px solid var(--border)}
@@ -45,9 +46,9 @@ with st.sidebar:
         st.stop()
     os.environ["GROQ_API_KEY"] = groq_api_key
     st.success("🟢 Ready")
-    st.caption("GPT-OSS 20B router only · no NVIDIA")
+    st.caption("GPT-OSS 20B · semantic router only")
     st.caption("Fresh travel facts always come from MCP")
-    st.caption("Airport/city resolution is handled by the MCP server")
+    st.caption("City → IATA resolution happens inside MCP before SerpApi")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -55,12 +56,45 @@ if "active_trip" not in st.session_state:
     st.session_state.active_trip = None
 if "trip_collection" not in st.session_state:
     st.session_state.trip_collection = {}
-if "comparison_trips" not in st.session_state:
-    st.session_state.comparison_trips = {}
+
+
+# ---------------------------------------------------------------------
+# Structured semantic router
+# ---------------------------------------------------------------------
+class Destination(BaseModel):
+    city: str = Field(description="Destination city name only. Do not output an airport code.")
+    country: Optional[str] = Field(default=None, description="Destination country when confidently known.")
+
+
+class RouterDecision(BaseModel):
+    action: Literal["FETCH", "REUSE", "ASK"]
+    missing: Optional[str] = Field(default=None)
+    question: Optional[str] = Field(default=None)
+    origin: Optional[str] = Field(default=None, description="Origin city name only, never an IATA code.")
+    destinations: list[Destination] = Field(default_factory=list)
+    departDate: Optional[str] = Field(default=None, description="YYYY-MM-DD")
+    returnDate: Optional[str] = Field(default=None, description="YYYY-MM-DD")
+    passengers: Optional[int] = Field(default=None, ge=1)
+    budgetLevel: Optional[Literal["budget", "mid-range", "luxury"]] = None
+    replace_active: bool = False
+    compare_with_active: bool = False
 
 
 def model(max_tokens=500):
-    return ChatGroq(model="openai/gpt-oss-20b", temperature=0, max_tokens=max_tokens)
+    return ChatGroq(
+        model="openai/gpt-oss-20b",
+        temperature=0,
+        max_tokens=max_tokens,
+    )
+
+
+def structured_router():
+    # Groq supports strict structured output for openai/gpt-oss-20b.
+    return model(max_tokens=600).with_structured_output(
+        RouterDecision,
+        method="json_schema",
+        strict=True,
+    )
 
 
 def iso(value: Any):
@@ -81,49 +115,19 @@ def normalize_city(value):
     return re.sub(r"\s+", " ", str(value or "").strip()).title()
 
 
-def safe_json(raw):
-    text = str(raw or "").strip()
-    if not text:
-        return None
-    try:
-        value = json.loads(text)
-        return value if isinstance(value, dict) else None
-    except json.JSONDecodeError:
-        pass
-    for block in re.findall(r"```(?:json)?\s*(.*?)\s*```", text, re.I | re.S):
-        try:
-            value = json.loads(block.strip())
-            if isinstance(value, dict):
-                return value
-        except json.JSONDecodeError:
-            continue
-    decoder = json.JSONDecoder()
-    for i, ch in enumerate(text):
-        if ch != "{":
-            continue
-        try:
-            value, _ = decoder.raw_decode(text[i:])
-            if isinstance(value, dict):
-                return value
-        except json.JSONDecodeError:
-            continue
-    return None
-
-
-MAX_ROUTER_TURNS = 10
-
-
-def format_conversation(chat_history):
-    recent = [m for m in chat_history if m["role"] in ("user", "assistant")][-MAX_ROUTER_TURNS:]
-    lines = []
+def format_conversation():
+    recent = [m for m in st.session_state.messages if m["role"] in ("user", "assistant")][-10:]
+    parts = []
     for item in recent:
-        speaker = "User" if item["role"] == "user" else "Assistant"
-        content = item["content"] if speaker == "User" else item["content"][:400]
-        lines.append(f"{speaker}: {content}")
-    return "\n".join(lines) if lines else "(no prior messages)"
+        text = item["content"]
+        if item["role"] == "assistant":
+            text = text[:700]
+        parts.append(("User" if item["role"] == "user" else "Assistant") + ": " + text)
+    return "\n".join(parts) if parts else "(no prior conversation)"
 
 
-def active_trip_summary(context):
+def active_trip_summary():
+    context = st.session_state.active_trip
     if not context:
         return "None yet."
     req = context.get("request", {})
@@ -137,99 +141,112 @@ def active_trip_summary(context):
         "budgetLevel": req.get("budgetLevel"),
     }, ensure_ascii=False)
 
-current_date = datetime.now().strftime("%Y-%m-%d")
 
-def build_router_prompt(context, chat_history):
-    return f"""You are an expert, factual AI Travel Agent and the semantic routing brain of a live MCP travel agent. Your goal is to plan realistic, bookable trips using ONLY real-time data returned by MCP.
+def collection_summary():
+    if not st.session_state.trip_collection:
+        return "None yet."
+    return json.dumps({
+        city: {
+            "origin": trip.get("request", {}).get("origin"),
+            "departDate": trip.get("request", {}).get("departDate"),
+            "returnDate": trip.get("request", {}).get("returnDate"),
+            "budgetLevel": trip.get("request", {}).get("budgetLevel"),
+        }
+        for city, trip in st.session_state.trip_collection.items()
+    }, ensure_ascii=False)
+
+
+SYSTEM_PROMPT = f"""
+You are an expert, factual AI Travel Agent and the semantic routing brain of a live MCP travel agent. Your goal is to plan realistic, bookable trips using ONLY real-time data returned by MCP.
 
 ### CURRENT CONTEXT
-- Today's Date: {current_date}
-- Relative dates such as next Friday or in 2 days must be resolved relative to today's date.
+- Today's Date: {date.today().isoformat()}
+- Resolve relative dates such as next Friday or in 2 days relative to today's date.
 
-### 🛡️ THE "ZERO HALLUCINATION" PROTOCOL
-1. **TRUTH OVER PLEASING:** If a tool returns no results (e.g., "No flights found"), you MUST tell the user: *"I could not find flights for these dates."* Do NOT invent a flight to make the user happy.
-   **PRICE INTEGRITY:** - You must report the **EXACT PRICE** returned by the `search_flights` and Other tools.
-   - **DO NOT LOWER THE PRICE** TO FIT THE USER'S "BUDGET" REQUEST. IF THE FLIGHT'S COST IS $100 AND THE USER WANTS "CHEAP", TELL THEM THE FLIGHT IS $100. DON'T INVENT A $10 FLIGHT.
-2. **PRICING HONESTY:** - **NEVER** invent a specific price (e.g., "$119") if the tool didn't provide it. 
-   - **EXCEPTION:** If the hotel tool returns a list of hotels but NO prices (or obvious mock prices), you may provide a **market estimate range** based on the hotel's tier (e.g., *"Typically $150-$200/night for a 5-star hotel in this city"*), but you MUST label it as an "Estimate".
-3. **CURRENCY:** Keep the currency as returned by the tool (USD/EUR/INR). Do not convert unless explicitly asked.
+### ZERO-HALLUCINATION PROTOCOL
+- MCP is the ONLY source of fresh travel facts: flights, hotels, places, restaurants, weather, budget and currency.
+- Never invent prices, availability, hotels, flights, attractions or weather.
+- Preserve exact prices returned by MCP.
+- Generic budget output from MCP is a planning estimate, not a live booking total.
+- Airport/city resolution is the MCP server's responsibility. The router must output PLAIN CITY NAMES. Never output or invent IATA codes.
 
-### 🛠️ TOOL-SPECIFIC INSTRUCTIONS
+### FLIGHT RULE
+- The MCP flight service resolves origin/destination cities to practical airport IATA codes server-side and passes those codes to SerpApi.
+- The frontend/router must never perform airport-code lookup.
 
-#### 1. ✈️ FLIGHTS (`search_flights`)
-- **CRITICAL:** The API fails if you send city names. You **MUST** convert them to 3-letter IATA codes.
-  - "New York" $\rightarrow$ `JFK` or `EWR`
-  - "Paris" $\rightarrow$ `CDG` or `ORY`
-  - "London" $\rightarrow$ `LHR` or `LGW`
-  - "Madurai" $\rightarrow$ `IXM`
-  - "Chennai" $\rightarrow$ `MAA`
-  - *Internal Knowledge:* Use your training data to find codes for other cities.
-- **DATES:** Format strictly as `YYYY-MM-DD`.
+### FOLLOW-UP / CONTEXT RULES
+- Use the full conversation and stored trip context.
+- A NEW destination requires fresh MCP data.
+- "Do the same", "same trip", "repeat this", "compare this with", and similar wording must be interpreted semantically from the conversation.
+- Multiple new destinations must all be returned in `destinations`; the app will fetch them independently and in parallel.
+- REUSE is allowed only when the answer can be derived entirely from already-fetched MCP data.
+- A comparison must fetch the new candidate with MCP and must not overwrite the active trip.
 
-#### 2. 🏨 HOTELS (`Google Hotels`)
-- **INPUT:** Send the full city name (e.g., "Paris").
-- **ANALYSIS:** - If the tool returns hotels with names like "Taj", "Oberoi", "Hilton", treat them as **Luxury**.
-  - If names contain "Inn", "Guest House", "Hostel", treat them as **Budget**.
-  - **Budgeting:** If the API price seems fake (e.g., all hotels are exactly $80), use the hotel's category to estimate a realistic budget for the user.
+### COMPARISON / BEST VALUE
+- compare_with_active=true when a new destination should be compared with the active trip.
+- replace_active=true for the first/full plan or an explicit destination switch.
+- "Best value" means lowest returned live flight + hotel subtotal unless the user explicitly asks for another criterion.
 
-#### 3. 🎡 PLACES (`search_places`)
-- **STRICT CATEGORIES:** You may ONLY use these values for the `category` argument:
-  - `tourist_attractions` (Museums, monuments)
-  - `restaurants` (Food, dining)
-  - `entertainment` (Nightlife, theaters)
-  - `nature` (Parks, beaches)
-  - `shopping` (Malls, markets)
-  - `religion` (Temples, churches, mosques)
-- **RADIUS:** Default to 5000 (5km) for city center, or 20000 (20km) if the user asks for "nearby" spots.
+### BUDGET RULES
+- budgetLevel must be exactly budget, mid-range or luxury.
+- `calculate_trip_budget` is generic planning data only.
+- A live subtotal must be computed separately from returned flight + hotel prices.
 
-#### 4. 💰 BUDGET (`calculate_trip_budget`)
-- **EXECUTION:** Call this tool **LAST**, only on the *first* full plan for a trip — not on every follow-up.
-- **VALID `budgetLevel` VALUES:** the tool only accepts exactly `budget`, `mid-range`, or `luxury` (nothing else — e.g. NOT `"low"`, `"cheap"`). Map the user's wording: "cheap/low/minimum" → `budget`, "moderate/comfortable" → `mid-range`, "luxury/high-end" → `luxury`. If you send an invalid value, the tool silently falls back to `mid-range` pricing, which will be wrong.
-- **IMPORTANT LIMITATION:** this tool does NOT accept real flight/hotel prices as input — it only returns a generic estimate for the chosen `budgetLevel`. Do NOT claim you "fed it the real price." Instead, report the tool's estimate labeled as "Generic estimate," and **separately** compute and clearly label a "Actual total (from real data found)" by summing the exact flight price + (hotel nightly price × nights) + a stated daily-expense estimate. When the user asks you to minimize cost, the actual total is what should change — the generic tool estimate will not.
+### REQUIRED ROUTER ACTIONS
+- FETCH: obtain fresh live MCP data.
+- REUSE: answer from stored MCP data.
+- ASK: information truly cannot be recovered from the conversation or stored trips.
 
-### 🔁 FOLLOW-UP QUESTIONS (DO NOT RE-CALL TOOLS UNNECESSARILY)
-- Prior tool results for this conversation are included below under `PRIOR TRIP DATA`, if any exist. Treat that as ground truth.
-- If the user's follow-up can be answered by re-reasoning over `PRIOR TRIP DATA` (e.g. "pick the cheapest hotel from that list," "minimize cost," "which one is best for families") — DO NOT call any tool again. Just re-analyze the existing data and answer directly.
-- Only call a tool again if the user asks for something the existing data cannot answer — a different city, different dates, a different category of place, or explicitly asks you to "search again" / "check for more/cheaper options."
+### REQUIRED STRUCTURE
+Return a structured RouterDecision object. Do not write a travel-plan answer here.
 
-### 📝 OUTPUT FORMAT
-1. **Summary:** A quick breakdown of flight options and hotel recommendations.
-2. **Itinerary:** A day-by-day plan using the specific *Attractions* found by `search_places`.
-3. **Budget:** Both the generic tool estimate and the actual computed total (see above).
-4. **Disclaimer:** "Prices and availability are subject to change."
+Examples:
+1. Complete first request for Chennai → Madurai, Aug 20–25, 1 traveler, budget:
+   FETCH, origin=Chennai, destinations=[Madurai], dates preserved, replace_active=true.
+2. "compare the same for Coimbatore and tell me which is better":
+   FETCH, destinations=[Coimbatore], compare_with_active=true, replace_active=false, inherit all other trip parameters.
+3. "do the same for Madurai, Kodaikanal and Ooty":
+   FETCH, destinations=[Madurai, Kodaikanal, Ooty], inherit origin/dates/travelers/budget.
+4. "which hotel is cheapest in Madurai?" when Madurai exists in stored trips:
+   REUSE, question=<user question>.
 
+### ACTIVE TRIP
+{active_trip_summary()}
 
-ACTIVE TRIP CONTEXT:
-{active_trip_summary(context)}
+### STORED TRIPS
+{collection_summary()}
 
-RECENT CONVERSATION:
-{format_conversation(chat_history)}
+### RECENT CONVERSATION
+{format_conversation()}
 """
 
 
-async def route_request(context, chat_history):
+async def route_request():
     try:
-        result = await model(max_tokens=500).ainvoke([
-            HumanMessage(content=build_router_prompt(context, chat_history))
-        ])
-        parsed = safe_json(result.content)
-        if isinstance(parsed, dict) and parsed.get("action") in {"FETCH", "REUSE", "ASK"}:
-            return parsed
-    except Exception:
-        pass
-    return {"action": "ASK", "missing": "Please provide origin, destination, departure date, return date, and traveler count."}
+        router = structured_router()
+        return await router.ainvoke([HumanMessage(content=SYSTEM_PROMPT)])
+    except Exception as first_error:
+        # One retry with the same strict schema. We fail only after both calls,
+        # and expose the real error instead of pretending information is missing.
+        try:
+            retry_prompt = SYSTEM_PROMPT + "\n\nReturn the RouterDecision now. Do not answer the trip itself."
+            return await structured_router().ainvoke([HumanMessage(content=retry_prompt)])
+        except Exception as second_error:
+            raise RuntimeError(
+                f"Semantic router failed twice: {type(second_error).__name__}: {second_error}"
+            ) from second_error
 
 
-def validate_request(req):
-    start, end = iso(req.get("departDate")), iso(req.get("returnDate"))
-    if not req.get("origin") or not req.get("destinationCity"):
+def validate_request(request):
+    start, end = iso(request.get("departDate")), iso(request.get("returnDate"))
+    if not request.get("origin") or not request.get("destinationCity"):
         return False, "Please provide a valid origin and destination."
     if not start or not end:
-        return False, "Please provide departure and return dates."
+        return False, "Please provide departure and return dates in YYYY-MM-DD format."
     if start < date.today():
         return False, f"The departure date {start.isoformat()} is in the past. Today is {date.today().isoformat()}."
     if end <= start:
-        return False, "Return date must be after departure date."
+        return False, "Return date must be after the departure date."
     return True, ""
 
 
@@ -240,7 +257,10 @@ async def mcp_trip(session, request):
     )
     if not result.content:
         raise RuntimeError("MCP returned no content")
-    return json.loads(result.content[0].text)
+    payload = json.loads(result.content[0].text)
+    if payload.get("planningBlocked"):
+        raise RuntimeError(payload.get("error", "MCP blocked trip planning"))
+    return payload
 
 
 def listv(services, key):
@@ -286,6 +306,35 @@ def clean_restaurants(items):
     return out
 
 
+def trip_price_snapshot(trip):
+    services = trip.get("services", {})
+    flight_prices = [x.get("price") for x in listv(services, "flights") if isinstance(x.get("price"), (int, float))]
+    hotel_prices = [x.get("price") for x in listv(services, "hotels") if isinstance(x.get("price"), (int, float))]
+    cheapest_flight = min(flight_prices) if flight_prices else None
+    cheapest_hotel = min(hotel_prices) if hotel_prices else None
+    nights = int(trip.get("request", {}).get("durationNights") or 0)
+    subtotal = cheapest_flight + cheapest_hotel * nights if cheapest_flight is not None and cheapest_hotel is not None else None
+    return cheapest_flight, cheapest_hotel, subtotal
+
+
+def compare(trips):
+    rows = [(label, *trip_price_snapshot(trip)) for label, trip in trips]
+    if not rows:
+        return "## 🔎 Comparison summary\n\nNo comparable live MCP data is available."
+    header = "| Metric | " + " | ".join(r[0] for r in rows) + " |"
+    separator = "|---|" + "---:|" * len(rows)
+    flight_row = "| Cheapest flight | " + " | ".join(money(r[1]) if r[1] is not None else "—" for r in rows) + " |"
+    hotel_row = "| Cheapest hotel/night | " + " | ".join(money(r[2]) if r[2] is not None else "—" for r in rows) + " |"
+    subtotal_row = "| Live flight + hotel subtotal | " + " | ".join(money(r[3]) if r[3] is not None else "—" for r in rows) + " |"
+    priced = [(r[0], r[3]) for r in rows if r[3] is not None]
+    if priced:
+        best_label, best_value = min(priced, key=lambda item: item[1])
+        verdict = f"### 🏆 Best value: {best_label}\n\nBased strictly on returned live flight + hotel cost, **{best_label}** is the lowest-cost option at **{money(best_value)}**."
+    else:
+        verdict = "### ⚠️ No cost winner\n\nThe returned MCP data does not contain enough usable flight and hotel prices to rank these destinations."
+    return "## 🔎 Comparison summary\n\n" + "\n".join([header, separator, flight_row, hotel_row, subtotal_row]) + "\n\n" + verdict
+
+
 def render_trip(trip):
     req = trip.get("request", {})
     services = trip.get("services", {})
@@ -299,184 +348,92 @@ def render_trip(trip):
     start, end = iso(req.get("departDate")), iso(req.get("returnDate"))
     nights = int(req.get("durationNights") or ((end - start).days if start and end else 0))
     days = nights + 1
-
-    out = [
+    lines = [
         "## ✈️ Trip at a glance", "",
         f"**{req.get('origin','—')} → {req.get('destinationCity','—')}, {req.get('destinationCountry','')}**",
-        f"**{req.get('departDate','—')} → {req.get('returnDate','—')} · {req.get('travelers',req.get('passengers',1))} traveler(s) · {nights} night(s) / {days} calendar day(s)**",
+        f"**{req.get('departDate','—')} → {req.get('returnDate','—')} · {req.get('travelers',1)} traveler(s) · {nights} night(s) / {days} calendar day(s)**",
         f"Budget: **{req.get('budgetLevel','budget')}**", "", "## 🛫 Flights", ""
     ]
-
     if flights:
-        out += ["| Airline | Price | Departure | Arrival | Duration | Stops |", "|---|---:|---|---|---:|---:|"]
+        lines += ["| Airline | Price | Departure | Arrival | Duration | Stops |", "|---|---:|---|---|---:|---:|"]
         for flight in flights[:5]:
             stops = int(flight.get("stops", 0) or 0)
-            out.append(
-                f"| {flight.get('airline','Unknown')} | {money(flight.get('price'),flight.get('currency','USD'))} | "
-                f"{flight.get('departure','—')} | {flight.get('arrival','—')} | {flight.get('duration','—')} | "
-                f"{'Non-stop' if stops == 0 else f'{stops} stop(s)'} |"
-            )
+            lines.append(f"| {flight.get('airline','Unknown')} | {money(flight.get('price'),flight.get('currency','USD'))} | {flight.get('departure','—')} | {flight.get('arrival','—')} | {flight.get('duration','—')} | {'Non-stop' if stops == 0 else f'{stops} stop(s)'} |")
+        lines.append("\n*Live provider results; prices and availability can change.*")
     else:
         error = services.get("flights", {}).get("error", "No live flight options were returned.") if isinstance(services.get("flights"), dict) else "No live flight options were returned."
-        out.append(f"**Live flights unavailable.** {error}")
-
-    out += ["", "## 🏨 Hotels", ""]
+        lines.append(f"**Live flights unavailable.** {error}")
+    lines += ["", "## 🏨 Hotels", ""]
     if hotels:
-        out += ["| Hotel | Nightly | Rating | Reviews |", "|---|---:|---:|---:|"]
+        lines += ["| Hotel | Nightly | Rating | Reviews |", "|---|---:|---:|---:|"]
         for hotel in hotels[:6]:
-            out.append(
-                f"| {hotel.get('name','Unknown')} | {money(hotel.get('price'),hotel.get('currency','USD'))} | "
-                f"{hotel.get('rating','—')} | {hotel.get('reviews','—')} |"
-            )
+            lines.append(f"| {hotel.get('name','Unknown')} | {money(hotel.get('price'),hotel.get('currency','USD'))} | {hotel.get('rating','—')} | {hotel.get('reviews','—')} |")
+        lines.append("\n*Live hotel rates returned for the requested dates.*")
     else:
         error = services.get("hotels", {}).get("error", "No live hotel options were returned.") if isinstance(services.get("hotels"), dict) else "No live hotel options were returned."
-        out.append(f"**Live hotels unavailable.** {error}")
-
-    out += ["", "## 📍 Things to do", ""]
-    out += [f"- **{a.get('name')}**" for a in atts[:8]] if atts else ["- No high-quality live tourist attractions were returned."]
-
-    out += ["", "## 🍽️ Food picks", ""]
-    out += [f"- **{r.get('name')}**" for r in rests[:8]] if rests else ["- No verified restaurant results were returned."]
-
-    out += ["", "## 🌦️ Weather", ""]
+        lines.append(f"**Live hotels unavailable.** {error}")
+    lines += ["", "## 📍 Things to do", ""]
+    lines += [f"- **{a.get('name')}" + (f"** — {a.get('description')}" if a.get('description') else "**") for a in atts[:8]] if atts else ["- No high-quality live tourist attractions were returned."]
+    lines += ["", "## 🍽️ Food picks", ""]
+    lines += [f"- **{r.get('name')}**" for r in rests[:8]] if rests else ["- No verified restaurant results were returned."]
+    lines += ["", "## 🌦️ Weather", ""]
     rows = weather.get("results", []) if isinstance(weather.get("results"), list) else []
     if rows:
-        out += ["| Date | Temp | Feels like | Conditions | Rain |", "|---|---:|---:|---|---:|"]
+        lines += ["| Date | Temp | Feels like | Conditions | Rain |", "|---|---:|---:|---|---:|"]
         for row in rows:
-            out.append(
-                f"| {row.get('date','—')} | {row.get('temperature','—')}°C | {row.get('feelsLike','—')}°C | "
-                f"{row.get('description','—')} | {row.get('precipitationProbability','—')}% |"
-            )
+            lines.append(f"| {row.get('date','—')} | {row.get('temperature','—')}°C | {row.get('feelsLike','—')}°C | {row.get('description','—')} | {row.get('precipitationProbability','—')}% |")
     else:
-        out.append(f"**Live weather unavailable.** {weather.get('error','No forecast data was returned for the requested dates.')}")
-
-    out += ["", "## 💰 Budget", ""]
+        lines.append(f"**Live weather unavailable.** {weather.get('error','No forecast data was returned for the requested dates.')}")
+    lines += ["", "## 💰 Budget", ""]
     if budget:
         currency = budget.get("currency", "USD")
         breakdown = budget.get("breakdown", {})
-        out += [
-            f"**Generic estimate:** {money(budget.get('total_budget'),currency)}",
-            f"- Flights estimate: {money(breakdown.get('flights_estimate'),currency)}",
-            f"- Accommodation estimate: {money(breakdown.get('accommodation_estimate'),currency)}",
-            f"- Daily expenses estimate: {money(breakdown.get('daily_expenses_estimate'),currency)}",
-            "",
-            "*Generic planning estimate only — not a live booking total.*",
-        ]
+        lines += [f"**Generic estimate:** {money(budget.get('total_budget'),currency)}", f"- Flights estimate: {money(breakdown.get('flights_estimate'),currency)}", f"- Accommodation estimate: {money(breakdown.get('accommodation_estimate'),currency)}", f"- Daily expenses estimate: {money(breakdown.get('daily_expenses_estimate'),currency)}", "", "*Generic planning estimate only — not a live booking total.*"]
     if live.get("complete"):
-        out += ["", f"**Cheapest live-data subtotal:** {money(live.get('cheapestLiveSubtotal'),live.get('currency','USD'))}"]
-
-    out += ["", "## 🗓️ Suggested itinerary", ""]
+        lines += ["", f"**Cheapest live-data subtotal:** {money(live.get('cheapestLiveSubtotal'), live.get('currency','USD'))}"]
+    lines += ["", "## 🗓️ Suggested itinerary", ""]
     if start and end:
-        current, attraction_index, restaurant_index = start, 0, 0
+        current, ai, ri = start, 0, 0
         while current <= end:
-            day_number = (current - start).days + 1
-            out.append(f"### Day {day_number} · {current.isoformat()}")
-            if day_number == 1:
-                out.append("- ✈️ Arrival / check-in")
+            day_no = (current - start).days + 1
+            lines.append(f"### Day {day_no} · {current.isoformat()}")
+            if day_no == 1:
+                lines.append("- ✈️ Arrival / check-in")
             elif current == end:
-                out.append("- 🧳 Check-out / departure")
+                lines.append("- 🧳 Check-out / departure")
             else:
                 picks = []
-                if attraction_index < len(atts):
-                    picks.append(atts[attraction_index]); attraction_index += 1
-                if attraction_index < len(atts) and len(picks) == 1 and day_number < days - 1:
-                    picks.append(atts[attraction_index]); attraction_index += 1
+                if ai < len(atts): picks.append(atts[ai]); ai += 1
+                if ai < len(atts) and len(picks) == 1 and day_no < days - 1: picks.append(atts[ai]); ai += 1
                 if picks:
-                    for j, attraction in enumerate(picks):
-                        out.append(f"- **{'Morning' if j == 0 else 'Afternoon'}:** {attraction.get('name')}")
+                    for j, attraction in enumerate(picks): lines.append(f"- **{'Morning' if j == 0 else 'Afternoon'}:** {attraction.get('name')}")
                 else:
-                    out.append("- Keep this period flexible rather than inventing another attraction.")
+                    lines.append("- Keep this period flexible rather than inventing another attraction.")
             if rests:
-                out.append(f"- 🍽️ **Food:** {rests[restaurant_index % len(rests)].get('name')}")
-                restaurant_index += 1
-            out.append("")
+                lines.append(f"- 🍽️ **Food:** {rests[ri % len(rests)].get('name')}")
+                ri += 1
+            lines.append("")
             current += timedelta(days=1)
-
-    out += [
-        "## ⚠️ Notes", "",
-        "- Live prices and availability can change before booking.",
-        "- Fresh travel facts above were returned by the MCP service bundle.",
-        "- Airport/city resolution for flights is handled server-side by the MCP flight service.",
-        "- No itinerary item is invented when the live provider returns nothing.",
-    ]
-    return "\n".join(out)
+    lines += ["## ⚠️ Notes", "", "- Live prices and availability can change before booking.", "- Fresh travel facts above were returned by the MCP service bundle.", "- Airport/city resolution for flights is handled server-side by MCP before SerpApi.", "- No itinerary item is invented when the live provider returns nothing."]
+    return "\n".join(lines)
 
 
-def trip_price_snapshot(trip):
-    services = trip.get("services", {})
-    flight_prices = [
-        x.get("price") for x in listv(services, "flights")
-        if isinstance(x.get("price"), (int, float))
-    ]
-    hotel_prices = [
-        x.get("price") for x in listv(services, "hotels")
-        if isinstance(x.get("price"), (int, float))
-    ]
-    cheapest_flight = min(flight_prices) if flight_prices else None
-    cheapest_hotel = min(hotel_prices) if hotel_prices else None
-    nights = int(trip.get("request", {}).get("durationNights") or 0)
-    subtotal = (
-        cheapest_flight + cheapest_hotel * nights
-        if cheapest_flight is not None and cheapest_hotel is not None
-        else None
-    )
-    return cheapest_flight, cheapest_hotel, subtotal
-
-
-def compare(trips):
-    rows = []
-    for label, trip in trips:
-        flight, hotel, subtotal = trip_price_snapshot(trip)
-        rows.append((label, flight, hotel, subtotal))
-
-    if not rows:
-        return "## 🔎 Comparison summary\n\nNo comparable live trip data is available."
-
-    header = "| Metric | " + " | ".join(label for label, *_ in rows) + " |"
-    separator = "|---|" + "---:|" * len(rows)
-    flight_row = "| Cheapest flight | " + " | ".join(money(v) if v is not None else "—" for _, v, _, _ in rows) + " |"
-    hotel_row = "| Cheapest hotel/night | " + " | ".join(money(v) if v is not None else "—" for _, _, v, _ in rows) + " |"
-    subtotal_row = "| Live flight + hotel subtotal | " + " | ".join(money(v) if v is not None else "—" for _, _, _, v in rows) + " |"
-
-    priced = [(label, subtotal) for label, _, _, subtotal in rows if subtotal is not None]
-    if priced:
-        best_label, best_value = min(priced, key=lambda item: item[1])
-        verdict = (
-            f"### 🏆 Best value: {best_label}\n\n"
-            f"Based strictly on the returned live flight + hotel subtotal, **{best_label}** is the lowest-cost option at **{money(best_value)}**."
-        )
-        if len(priced) < len(rows):
-            verdict += " Some destinations were excluded because MCP did not return both a usable flight and hotel price."
-    else:
-        verdict = "### ⚠️ No cost winner\n\nThe returned MCP data does not contain enough usable flight and hotel prices to determine a best-value option."
-
-    return "## 🔎 Comparison summary\n\n" + "\n".join([header, separator, flight_row, hotel_row, subtotal_row]) + f"\n\n{verdict}"
-
-
-async def answer_from_context(question, context):
-    payload = {
-        "request": context.get("request", {}),
-        "flights": listv(context.get("services", {}), "flights")[:10],
-        "hotels": listv(context.get("services", {}), "hotels")[:10],
-        "attractions": [a.get("name") for a in clean_attractions(context.get("services", {}).get("attractions"))[:10]],
-        "restaurants": [r.get("name") for r in clean_restaurants(context.get("services", {}).get("restaurants"))[:10]],
-        "weather": context.get("services", {}).get("weather", {}),
-        "budget": context.get("services", {}).get("budget", {}),
-        "liveDataSummary": context.get("liveDataSummary", {}),
+async def answer_from_stored(question):
+    trips = st.session_state.trip_collection
+    if not trips:
+        return "## 🧭 No stored trip data yet\n\nStart with a complete trip request first."
+    compact = {
+        city: {
+            "request": trip.get("request", {}),
+            "flights": listv(trip.get("services", {}), "flights")[:10],
+            "hotels": listv(trip.get("services", {}), "hotels")[:10],
+            "budget": trip.get("services", {}).get("budget", {}),
+        }
+        for city, trip in trips.items()
     }
-    prompt = f"""Answer the user's question using ONLY the previously fetched MCP data below. Do not invent facts, prices, places, weather, or availability. If the data is insufficient, say so plainly.
-
-DATA:
-{json.dumps(payload, ensure_ascii=False)[:7000]}
-
-QUESTION:
-{question}
-"""
-    try:
-        result = await model(max_tokens=300).ainvoke([HumanMessage(content=prompt)])
-        return (result.content or "").strip() or render_trip(context)
-    except Exception:
-        return render_trip(context)
+    prompt = f"""Answer the user's follow-up using ONLY the stored MCP data below. Do not invent or estimate facts. If the data is insufficient, say so.\n\nSTORED MCP DATA:\n{json.dumps(compact, ensure_ascii=False)[:9000]}\n\nQUESTION:\n{question}"""
+    result = await model(max_tokens=300).ainvoke([HumanMessage(content=prompt)])
+    return (result.content or "").strip() or "I could not answer that from the stored MCP data."
 
 
 async def open_mcp():
@@ -492,71 +449,45 @@ async def fetch_parallel(session, requests, status):
             return index, await mcp_trip(session, request), None
         except Exception as exc:
             return index, None, f"{type(exc).__name__}: {exc}"
-
     results = await asyncio.gather(*(one(i, request) for i, request in enumerate(requests)))
-    results.sort(key=lambda item: item[0])
-    for index, trip, error in results:
-        city = requests[index].get("destinationCity", "Trip")
-        status.info(("⚠️ MCP failed" if error else "✅ MCP returned") + f": {city}")
+    results.sort(key=lambda x: x[0])
     return results
 
 
-def build_fetch_requests(route, context):
-    base = dict((context or {}).get("request", {}))
-    origin = route.get("origin") or base.get("origin")
-    depart = route.get("departDate") or base.get("departDate")
-    return_date = route.get("returnDate") or base.get("returnDate")
-    passengers = int(route.get("passengers") or base.get("passengers") or base.get("travelers") or 1)
-    budget = route.get("budgetLevel") or base.get("budgetLevel") or "budget"
-    destinations = route.get("destinations") or []
-
+def build_requests(route: RouterDecision):
+    origin = normalize_city(route.origin)
     requests = []
-    for destination in destinations:
-        if isinstance(destination, dict):
-            city = normalize_city(destination.get("city"))
-            country = destination.get("country")
-        else:
-            city = normalize_city(destination)
-            country = None
+    for destination in route.destinations:
+        city = normalize_city(destination.city)
         if not city:
             continue
-
-        # Compatibility with the current MCP schema: the backend now treats
-        # these fields as city/location inputs and resolves the actual airport
-        # server-side before SerpApi flight search.
         requests.append({
-            "origin": normalize_city(origin),
+            "origin": origin,
             "destinationCity": city,
-            "destinationCountry": country or "",
-            "departDate": depart,
-            "returnDate": return_date,
-            "passengers": passengers,
-            "budgetLevel": budget,
+            "destinationCountry": destination.country or "",
+            "departDate": route.departDate,
+            "returnDate": route.returnDate,
+            "passengers": int(route.passengers or 1),
+            "budgetLevel": route.budgetLevel or "budget",
+            "placesRadius": 5000,
         })
-
     return requests
 
 
-async def run_turn(message, holder):
+async def run_turn(user_message, holder):
     stack = None
     try:
         holder.info("🧠 Understanding your request…")
-        context = st.session_state.active_trip
-        route = await route_request(context, st.session_state.messages)
-        action = str(route.get("action", "ASK")).upper()
+        route = await route_request()
 
-        if action == "ASK":
-            return f"## 🧭 I need a little more information\n\n{route.get('missing') or 'Please provide origin, destination, dates, and traveler count.'}"
+        if route.action == "ASK":
+            return "## 🧭 I need a little more information\n\n" + (route.missing or "Please provide origin, destination, departure date, return date, and traveler count.")
 
-        if action == "REUSE":
-            if not context:
-                return "## 🧭 No active trip yet\n\nStart with a complete trip request first."
-            return await answer_from_context(route.get("question") or message, context)
+        if route.action == "REUSE":
+            holder.info("♻️ Reusing previously fetched MCP data…")
+            return await answer_from_stored(route.question or user_message)
 
-        requests = build_fetch_requests(route, context)
-        if not requests:
-            return "## 🧭 I need a little more information\n\nPlease provide at least one destination."
-
+        requests = build_requests(route)
         validation_errors = []
         valid_requests = []
         for request in requests:
@@ -564,10 +495,10 @@ async def run_turn(message, holder):
             if ok:
                 valid_requests.append(request)
             else:
-                validation_errors.append(f"**{request.get('destinationCity', 'Trip')}:** {error}")
+                validation_errors.append(f"**{request.get('destinationCity','Trip')}:** {error}")
 
         if not valid_requests:
-            return "## ⚠️ Cannot plan\n\n" + "\n\n".join(validation_errors)
+            return "## ⚠️ Cannot plan\n\n" + ("\n\n".join(validation_errors) if validation_errors else "Please provide a destination and valid future dates.")
 
         holder.info(f"⚡ Fetching live MCP data for {len(valid_requests)} destination(s)…")
         stack, session = await open_mcp()
@@ -576,7 +507,7 @@ async def run_turn(message, holder):
         fetched = []
         rendered = []
         for index, trip, error in results:
-            city = valid_requests[index].get("destinationCity", "Trip")
+            city = valid_requests[index]["destinationCity"]
             if error:
                 rendered.append(f"## ❌ {city}\n\nMCP live-data call failed: `{error}`")
                 continue
@@ -586,41 +517,28 @@ async def run_turn(message, holder):
         if not fetched:
             return "## ⚠️ No live MCP results were returned."
 
-        replace_active = bool(route.get("replace_active")) or context is None
-        compare_with_active = bool(route.get("compare_with_active")) and context is not None
-
-        if replace_active:
+        context = st.session_state.active_trip
+        if route.replace_active or context is None:
             st.session_state.active_trip = fetched[0]
-
-        if compare_with_active and context is not None:
-            for trip in fetched:
-                city = trip.get("request", {}).get("destinationCity", "candidate")
-                st.session_state.comparison_trips[city.lower()] = trip
 
         for trip in fetched:
             rendered.append(render_trip(trip))
 
-        if compare_with_active and context is not None:
+        if route.compare_with_active and context is not None:
             pool = [(context.get("request", {}).get("destinationCity", "Active trip"), context)]
-            pool.extend(
-                (trip.get("request", {}).get("destinationCity", "Candidate"), trip)
-                for trip in fetched
-            )
+            pool.extend((trip.get("request", {}).get("destinationCity", "Candidate"), trip) for trip in fetched)
             rendered.append(compare(pool))
         elif len(fetched) > 1:
-            # A batch of fresh destinations is also directly comparable.
-            pool = [
-                (trip.get("request", {}).get("destinationCity", "Trip"), trip)
-                for trip in fetched
-            ]
-            rendered.append(compare(pool))
+            rendered.append(compare([(trip.get("request", {}).get("destinationCity", "Trip"), trip) for trip in fetched]))
 
         if validation_errors:
             rendered.insert(0, "## ⚠️ Some requests were not run\n\n" + "\n\n".join(validation_errors))
 
+        holder.empty()
         return "\n\n---\n\n".join(rendered)
 
     except Exception as exc:
+        holder.empty()
         return f"## ❌ Something went wrong\n\n`{type(exc).__name__}: {exc}`"
     finally:
         if stack is not None:
