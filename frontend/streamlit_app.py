@@ -20,8 +20,6 @@ nest_asyncio.apply()
 # =============================================================================
 # UI & STYLING
 # =============================================================================
-st.set_page_config(page_title="Neuronworks Travel Agent", page_icon="✈️", layout="wide")
-
 st.markdown("""
 <style>
 /* ===== DARK MODE (default) ===== */
@@ -152,32 +150,68 @@ section[data-testid="stSidebar"] h3 {
     color: var(--text-primary) !important;
 }
 
-/* ===== CHAT INPUT STYLING ===== */
+/* ===== CHAT INPUT — single clean layer, no double box ===== */
+
+/* Outer wrapper: the ONLY visible box */
 div[data-testid="stChatInput"] {
-    background: var(--bg-secondary) !important;
-    border: 1px solid var(--input-border) !important;
+    background: var(--input-bg) !important;
+    border: 1.5px solid var(--input-border) !important;
     border-radius: 16px !important;
-    padding: 0.4rem 0.6rem !important;
+    padding: 0.35rem 0.5rem !important;
     transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
-}
-div[data-testid="stChatInput"]:focus-within {
-    border-color: var(--input-focus-border) !important;
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15) !important;
-}
-div[data-testid="stChatInput"] textarea {
-    color: var(--text-primary) !important;
-    background: transparent !important;
-    font-size: 1rem !important;
-    line-height: 1.5 !important;
-    padding: 0.5rem 0.4rem !important;
-    border: none !important;
     box-shadow: none !important;
 }
+
+/* Focus glow on outer wrapper only */
+div[data-testid="stChatInput"]:focus-within {
+    border-color: var(--input-focus-border) !important;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18) !important;
+}
+
+/* Kill ALL nested div wrappers Streamlit injects around the textarea */
+div[data-testid="stChatInput"] > div,
+div[data-testid="stChatInput"] > div > div,
+div[data-testid="stChatInput"] > div > div > div {
+    background: transparent !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-width: 0 !important;
+    box-shadow: none !important;
+    outline: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+/* Inner textarea: fully invisible chrome */
+div[data-testid="stChatInput"] textarea,
+div[data-testid="stChatInput"] textarea:focus,
+div[data-testid="stChatInput"] textarea:active,
+div[data-testid="stChatInput"] textarea:hover {
+    color: var(--text-primary) !important;
+    background: transparent !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-width: 0 !important;
+    box-shadow: none !important;
+    outline: none !important;
+    font-size: 1rem !important;
+    line-height: 1.5 !important;
+    padding: 0.45rem 0.3rem !important;
+    resize: none !important;
+    min-height: 24px !important;
+}
+
+/* Placeholder */
 div[data-testid="stChatInput"] textarea::placeholder {
     color: var(--input-placeholder) !important;
     font-style: italic !important;
+    opacity: 1 !important;
 }
-div[data-testid="stChatInput"] button {
+
+/* Send button */
+div[data-testid="stChatInput"] button,
+div[data-testid="stChatInput"] button:focus,
+div[data-testid="stChatInput"] button:active {
     background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
     border: none !important;
     border-radius: 12px !important;
@@ -185,6 +219,9 @@ div[data-testid="stChatInput"] button {
     width: 36px !important;
     height: 36px !important;
     min-width: 36px !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    outline: none !important;
     transition: opacity 0.2s ease !important;
 }
 div[data-testid="stChatInput"] button:hover {
@@ -195,16 +232,20 @@ div[data-testid="stChatInput"] button svg {
     stroke: white !important;
 }
 
-/* General input fields (sidebar etc.) */
-input, textarea:not(div[data-testid="stChatInput"] textarea) {
+/* ===== SIDEBAR INPUTS (separate from chat input) ===== */
+section[data-testid="stSidebar"] input,
+section[data-testid="stSidebar"] textarea {
     color: var(--text-primary) !important;
     background: var(--input-bg) !important;
     border: 1px solid var(--input-border) !important;
     border-radius: 10px !important;
+    padding: 0.5rem 0.75rem !important;
 }
-input:focus, textarea:focus {
+section[data-testid="stSidebar"] input:focus,
+section[data-testid="stSidebar"] textarea:focus {
     border-color: var(--input-focus-border) !important;
     box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15) !important;
+    outline: none !important;
 }
 </style>
 """, unsafe_allow_html=True)
