@@ -4,6 +4,7 @@ import os
 import json
 import nest_asyncio
 import ast
+import urllib.request
 from contextlib import AsyncExitStack
 from pydantic import create_model, Field
 from datetime import datetime
@@ -18,8 +19,17 @@ from langchain_core.tools import StructuredTool
 nest_asyncio.apply()
 
 # =============================================================================
+# TIMEOUT CONSTANTS — tuned for Render free-tier cold starts
+# =============================================================================
+MCP_CONNECT_TIMEOUT = 60
+MCP_TOOL_TIMEOUT = 45
+LLM_INVOKE_TIMEOUT = 90
+
+# =============================================================================
 # UI & STYLING
 # =============================================================================
+st.set_page_config(page_title="Neuronworks Travel Agent", page_icon="✈️", layout="wide")
+
 st.markdown("""
 <style>
 /* ===== DARK MODE (default) ===== */
@@ -151,8 +161,6 @@ section[data-testid="stSidebar"] h3 {
 }
 
 /* ===== CHAT INPUT — single clean layer, no double box ===== */
-
-/* Outer wrapper: the ONLY visible box */
 div[data-testid="stChatInput"] {
     background: var(--input-bg) !important;
     border: 1.5px solid var(--input-border) !important;
@@ -161,14 +169,10 @@ div[data-testid="stChatInput"] {
     transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
     box-shadow: none !important;
 }
-
-/* Focus glow on outer wrapper only */
 div[data-testid="stChatInput"]:focus-within {
     border-color: var(--input-focus-border) !important;
     box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18) !important;
 }
-
-/* Kill ALL nested div wrappers Streamlit injects around the textarea */
 div[data-testid="stChatInput"] > div,
 div[data-testid="stChatInput"] > div > div,
 div[data-testid="stChatInput"] > div > div > div {
@@ -181,8 +185,6 @@ div[data-testid="stChatInput"] > div > div > div {
     padding: 0 !important;
     margin: 0 !important;
 }
-
-/* Inner textarea: fully invisible chrome */
 div[data-testid="stChatInput"] textarea,
 div[data-testid="stChatInput"] textarea:focus,
 div[data-testid="stChatInput"] textarea:active,
@@ -200,15 +202,11 @@ div[data-testid="stChatInput"] textarea:hover {
     resize: none !important;
     min-height: 24px !important;
 }
-
-/* Placeholder */
 div[data-testid="stChatInput"] textarea::placeholder {
     color: var(--input-placeholder) !important;
     font-style: italic !important;
     opacity: 1 !important;
 }
-
-/* Send button */
 div[data-testid="stChatInput"] button,
 div[data-testid="stChatInput"] button:focus,
 div[data-testid="stChatInput"] button:active {
@@ -224,15 +222,10 @@ div[data-testid="stChatInput"] button:active {
     outline: none !important;
     transition: opacity 0.2s ease !important;
 }
-div[data-testid="stChatInput"] button:hover {
-    opacity: 0.85 !important;
-}
-div[data-testid="stChatInput"] button svg {
-    fill: white !important;
-    stroke: white !important;
-}
+div[data-testid="stChatInput"] button:hover { opacity: 0.85 !important; }
+div[data-testid="stChatInput"] button svg { fill: white !important; stroke: white !important; }
 
-/* ===== SIDEBAR INPUTS (separate from chat input) ===== */
+/* ===== SIDEBAR INPUTS ===== */
 section[data-testid="stSidebar"] input,
 section[data-testid="stSidebar"] textarea {
     color: var(--text-primary) !important;
@@ -282,10 +275,6 @@ with st.sidebar:
 # HELPERS
 # =============================================================================
 _mcp_tool_schemas: dict = {}
-
-MCP_CONNECT_TIMEOUT = 15
-MCP_TOOL_TIMEOUT = 30
-LLM_INVOKE_TIMEOUT = 60
 
 
 def create_pydantic_model_from_schema(name, schema):
@@ -433,10 +422,7 @@ def beautify_output(text: str) -> str:
 
 
 def synthesize_from_trip_data(trip_data: dict) -> str:
-    """
-    When the LLM returns empty after tool calls, build a basic response
-    from the cached tool data so the user isn't left with nothing.
-    """
+    """When the LLM returns empty after tool calls, build a response from cached data."""
     if not trip_data:
         return "I gathered data but couldn't generate a summary. Please try again."
 
@@ -445,34 +431,12 @@ def synthesize_from_trip_data(trip_data: dict) -> str:
     for tool_name, data in trip_data.items():
         lines.append(f"### 🔧 {tool_name}")
         if isinstance(data, dict):
-            # Try to extract useful summary fields
             if 'total_budget' in data:
                 lines.append(f"- **Total Budget Estimate:** {data.get('currency', 'USD')} {data['total_budget']}")
                 breakdown = data.get('breakdown', {})
                 for k, v in breakdown.items():
                     lines.append(f"  - {k.replace('_', ' ').title()}: {data.get('currency', 'USD')} {v}")
-            elif 'flights' in str(data)[:50].lower() or tool_name == 'search_flights':
-                # Show first few flights
-                items = data if isinstance(data, list) else data.get('results', data.get('flights', []))
-                if isinstance(items, list):
-                    for item in items[:3]:
-                        if isinstance(item, dict):
-                            airline = item.get('airline', item.get('name', 'Unknown'))
-                            price = item.get('price', 'N/A')
-                            currency = item.get('currency', 'USD')
-                            lines.append(f"- **{airline}**: {currency} {price}")
-            elif tool_name == 'search_hotels' or 'hotel' in tool_name.lower():
-                items = data if isinstance(data, list) else data.get('results', data.get('hotels', []))
-                if isinstance(items, list):
-                    for item in items[:3]:
-                        if isinstance(item, dict):
-                            name = item.get('name', 'Unknown')
-                            price = item.get('price', 'N/A')
-                            currency = item.get('currency', 'USD')
-                            rating = item.get('rating', 'N/A')
-                            lines.append(f"- **{name}**: {currency} {price}/night (Rating: {rating})")
             else:
-                # Generic: show truncated JSON
                 preview = json.dumps(data, separators=(',', ':'))[:500]
                 lines.append(f"```\n{preview}\n```")
         elif isinstance(data, list):
@@ -576,6 +540,18 @@ async def run_agent_streaming(
 
     async with AsyncExitStack() as stack:
         try:
+            # --- Warm up Render free-tier server (cold start recovery) ---
+            yield {"type": "thinking", "message": "☀️ Waking up MCP server (may take 30-60s on first use)..."}
+            try:
+                warmup_url = server_url.replace("/sse", "/health") if "/sse" in server_url else server_url
+                req = urllib.request.Request(warmup_url, method="GET")
+                await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(None, urllib.request.urlopen, req),
+                    timeout=MCP_CONNECT_TIMEOUT
+                )
+            except Exception:
+                pass  # Health endpoint may not exist — SSE connect will still work
+
             # --- Connect with timeout ---
             yield {"type": "thinking", "message": "🔌 Connecting to MCP server..."}
             try:
@@ -590,7 +566,7 @@ async def run_agent_streaming(
                 if hasattr(session, "initialize"):
                     await asyncio.wait_for(session.initialize(), timeout=MCP_CONNECT_TIMEOUT)
             except asyncio.TimeoutError:
-                yield {"type": "error", "message": f"❌ MCP server connection timed out after {MCP_CONNECT_TIMEOUT}s. Check the server URL."}
+                yield {"type": "error", "message": f"❌ MCP server connection timed out after {MCP_CONNECT_TIMEOUT}s. The Render free-tier server may need more time to wake up — try again in a moment."}
                 return
 
             # --- Discover Tools ---
@@ -691,7 +667,9 @@ async def run_agent_streaming(
                     break
 
                 had_tool_calls = True
+                tool_errors = []
 
+                # --- Execute each tool call ---
                 for tool_call in tool_calls_to_execute:
                     tool_name = tool_call['name']
 
@@ -720,6 +698,25 @@ async def run_agent_streaming(
                         )
                         content_text = clean_tool_output(tool_name, content_text)
 
+                        # Check if the tool itself returned an error in its response
+                        is_tool_error = False
+                        try:
+                            parsed_result = json.loads(content_text)
+                            if isinstance(parsed_result, dict):
+                                services = parsed_result.get("services", {})
+                                for svc_name, svc_data in services.items():
+                                    if isinstance(svc_data, dict) and "error" in svc_data:
+                                        is_tool_error = True
+                                        tool_errors.append(f"{svc_name}: {svc_data['error']}")
+                                if parsed_result.get("error"):
+                                    is_tool_error = True
+                                    tool_errors.append(parsed_result["error"])
+                                if parsed_result.get("planningBlocked"):
+                                    is_tool_error = True
+                                    tool_errors.append(parsed_result.get("error", "Planning blocked"))
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
                         try: trip_data[tool_name] = json.loads(content_text)
                         except: trip_data[tool_name] = content_text
 
@@ -727,25 +724,40 @@ async def run_agent_streaming(
                             tool_call_id=tool_call['id'],
                             content=content_text, name=tool_name
                         ))
+
                         preview = content_text[:300] + "..." if len(content_text) > 300 else content_text
-                        yield {"type": "tool_end", "name": tool_name, "success": True, "preview": preview}
+                        if is_tool_error:
+                            yield {"type": "tool_end", "name": tool_name, "success": False, "preview": f"⚠️ Partial: {preview}"}
+                        else:
+                            yield {"type": "tool_end", "name": tool_name, "success": True, "preview": preview}
 
                     except asyncio.TimeoutError:
                         err = f"Tool {tool_name} timed out after {MCP_TOOL_TIMEOUT}s"
-                        messages.append(ToolMessage(
-                            tool_call_id=tool_call['id'], content=err, name=tool_name
-                        ))
-                        yield {"type": "tool_end", "name": tool_name, "success": False, "preview": err}
-                    except Exception as e:
-                        err = f"Error: {str(e)}"
+                        tool_errors.append(err)
                         messages.append(ToolMessage(
                             tool_call_id=tool_call['id'], content=err, name=tool_name
                         ))
                         yield {"type": "tool_end", "name": tool_name, "success": False, "preview": err}
 
+                    except Exception as e:
+                        err = f"Error: {str(e)}"
+                        tool_errors.append(err)
+                        messages.append(ToolMessage(
+                            tool_call_id=tool_call['id'], content=err, name=tool_name
+                        ))
+                        yield {"type": "tool_end", "name": tool_name, "success": False, "preview": err}
+
+                # If there were tool errors, tell the LLM to work with partial data
+                if tool_errors:
+                    error_summary = "; ".join(tool_errors)
+                    messages.append(SystemMessage(
+                        content=f"Some tools returned partial errors: {error_summary}. "
+                        "Use whatever data WAS successfully returned. Do NOT say 'functions are insufficient'. "
+                        "Present the available data and clearly note which parts failed."
+                    ))
+
             # =============================================================
-            # FINAL ANSWER: Try streaming first, fall back to ainvoke,
-            # then fall back to synthesized response from tool data
+            # FINAL ANSWER: 3-tier fallback
             # =============================================================
             full_response = ""
 
@@ -761,7 +773,7 @@ async def run_agent_streaming(
                         full_response += chunk.content
                         yield {"type": "token", "content": chunk.content}
             except Exception:
-                pass  # Fall through to attempt 2
+                pass
 
             # Attempt 2: If streaming yielded nothing, try ainvoke
             if not full_response.strip():
@@ -773,11 +785,10 @@ async def run_agent_streaming(
                     )
                     if fallback_msg.content and fallback_msg.content.strip():
                         full_response = fallback_msg.content
-                        # Stream the fallback response character-by-character for UX
                         for char in full_response:
                             yield {"type": "token", "content": char}
                 except Exception:
-                    pass  # Fall through to attempt 3
+                    pass
 
             # Attempt 3: If LLM still returned nothing, synthesize from tool data
             if not full_response.strip():
