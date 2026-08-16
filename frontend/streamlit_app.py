@@ -16,7 +16,9 @@ from langchain_core.tools import StructuredTool
 # 1. Apply Async Patch for Streamlit
 nest_asyncio.apply()
 
-# 2. Page Config & UI
+# 2. Page Config & UI (Your original beautiful styling)
+st.set_page_config(page_title="Neuronworks Travel Agent", page_icon="✈️", layout="wide")
+
 st.markdown("""
 <style>
 :root{--bg:#080b14;--border:rgba(255,255,255,.10);--muted:#94a3b8}
@@ -26,6 +28,22 @@ st.markdown("""
 .hero h1{margin:0;color:#fff;font-size:2.2rem}.hero p{margin:8px 0;color:#cbd5e1}
 .pill{display:inline-block;padding:5px 11px;border-radius:999px;background:rgba(255,255,255,.09);color:#e2e8f0;font-size:.75rem;border:1px solid var(--border)}
 div[data-testid="stChatMessage"]{border:1px solid var(--border);border-radius:18px;padding:1rem 1.1rem;margin:.7rem 0;background:rgba(15,23,42,.82)}
+
+/* Tool call status styling */
+div[data-testid="stStatus"] {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    margin: 0.5rem 0;
+    background: rgba(30, 41, 59, 0.6);
+}
+div[data-testid="stStatus"] summary {
+    padding: 0.5rem 1rem;
+    font-weight: 500;
+    color: #94a3b8;
+}
+div[data-testid="stStatus"] div[data-testid="stMarkdown"] {
+    padding: 0.5rem 1rem;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -37,18 +55,19 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# 3. Sidebar Configuration (Environment Variables)
+# 3. Sidebar Configuration
 with st.sidebar:
-    st.header("Configuration")
+    st.header("⚙️ Configuration")
     server_url = st.text_input("MCP Server URL", value="https://neuronworks-travel-agent.onrender.com/sse")
     
-    # 🚨 Read API Key from OS Environment Variables
+    # Read API Key from environment variables
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         st.error("⚠️ Please set the OPENROUTER_API_KEY environment variable.")
         st.stop()
         
     st.success("✅ Connected to OpenRouter")
+    st.caption("Model: Llama 3.3 70B Instruct")
     
     if st.button("🗑️ Clear Chat & Memory"):
         st.session_state.messages = []
@@ -76,39 +95,178 @@ def create_pydantic_model_from_schema(name, schema):
             )
     return create_model(f"{name}Input", **fields)
 
-# --- 🛡️ GARBAGE FILTER: Remove Waterworks, Statues, etc. ---
+# --- 🛡️ AGGRESSIVE GARBAGE FILTER ---
 def clean_tool_output(tool_name, raw_text):
-    """Intercepts tool results and deletes infrastructure/statues before the LLM sees them."""
+    """Aggressively filters out garbage from place/attraction tool results."""
+    tool_lower = tool_name.lower()
+    if not any(keyword in tool_lower for keyword in ['place', 'attraction', 'search', 'poi', 'location']):
+        return raw_text
+    
     try:
         data = json.loads(raw_text)
         items, wrapper_key = [], None
         
-        if isinstance(data, list): items = data
+        if isinstance(data, list):
+            items = data
         elif isinstance(data, dict):
-            for k, v in data.items():
-                if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                    items = v
-                    wrapper_key = k
+            for key in ['results', 'places', 'data', 'items', 'attractions', 'locations', 'candidates']:
+                if key in data and isinstance(data[key], list):
+                    items = data[key]
+                    wrapper_key = key
                     break
+            if not items:
+                for k, v in data.items():
+                    if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
+                        items = v
+                        wrapper_key = k
+                        break
         
-        if not items: return raw_text
-            
-        # Deny list for non-tourist infrastructure (specifically targeting the garbage you saw)
+        if not items:
+            return raw_text
+        
+        # Google Places types that ARE tourist attractions
+        good_types = {
+            'tourist_attraction', 'museum', 'art_gallery', 'park', 'national_park',
+            'zoo', 'aquarium', 'amusement_park', 'theme_park', 'water_park',
+            'place_of_worship', 'church', 'mosque', 'hindu_temple', 'buddhist_temple',
+            'synagogue', 'gurdwara', 'shrine', 'temple',
+            'historical_landmark', 'monument', 'memorial',
+            'natural_feature', 'beach', 'lake', 'river', 'waterfall', 'mountain', 'hill',
+            'viewpoint', 'observatory', 'planetarium', 'science_center',
+            'restaurant', 'cafe', 'bar', 'food', 'meal_takeaway', 'meal_delivery',
+            'shopping_mall', 'market', 'department_store', 'supermarket',
+            'movie_theater', 'night_club', 'casino', 'amusement_center',
+            'lodging', 'hotel', 'resort_hotel', 'guest_house', 'hostel',
+            'stadium', 'arena', 'park', 'national_park', 'state_park', 'city_park',
+            'campground', 'rv_park', 'tourist_attraction',
+        }
+        
+        # Google Places types that are NOT tourist attractions
+        bad_types = {
+            'bus_station', 'bus_stop', 'train_station', 'subway_station', 'tram_station',
+            'taxi_stand', 'parking', 'car_rental', 'car_repair', 'car_wash', 'car_dealer',
+            'gas_station', 'petrol_station', 'fuel_station', 'electric_vehicle_charging_station',
+            'hospital', 'doctor', 'dentist', 'pharmacy', 'clinic', 'health', 'physiotherapist',
+            'school', 'university', 'college', 'library', 'day_care', 'kindergarten',
+            'police', 'fire_station', 'post_office', 'courthouse', 'embassy', 'city_hall',
+            'bank', 'atm', 'accounting', 'finance', 'insurance_agency', 'lawyer',
+            'real_estate_agency', 'travel_agency', 'moving_company',
+            'electrician', 'plumber', 'roofing_contractor', 'general_contractor', 'locksmith',
+            'hardware_store', 'home_goods_store', 'furniture_store', 'electronics_store',
+            'clothing_store', 'shoe_store', 'jewelry_store', 'florist', 'book_store',
+            'grocery_or_supermarket', 'convenience_store', 'bakery', 'butcher', 'liquor_store',
+            'gym', 'spa', 'beauty_salon', 'hair_care', 'laundry', 'dry_cleaning',
+            'movie_rental', 'bicycle_store', 'pet_store', 'veterinary_care',
+            'funeral_home', 'cemetery', 'crematorium',
+            'local_government_office', 'storage', 'storage_rental', 'warehouse',
+        }
+        
+        # Name-based deny list (comprehensive)
         deny_words = [
-            'water works', 'waterworks', 'statue', 'thorana vayil', 'nagar', 'colony', 'layout', 
-            'bus stop', 'bus station', 'railway', 'parking', 'signal', 'flyover', 
-            'underpass', 'bypass', 'hospital', 'police station', 'post office',
-            'circle', 'chowk', 'junction', 'roundabout', 'salai', 'theru',
-            'memorial', 'pillar', 'mandapam', 'township', 'extension', 'ward',
-            'block', 'car shelter', 'subway', 'metro'
+            # Infrastructure
+            'water works', 'waterworks', 'water tank', 'water supply', 'water treatment',
+            'sewage', 'drainage', 'pump house', 'pumping station', 'water board', 'water authority',
+            # Transportation
+            'bus stop', 'bus stand', 'bus station', 'bus depot', 'bus terminal', 'bus bay',
+            'railway station', 'railway crossing', 'railway gate', 'railway track', 'railway colony',
+            'metro station', 'metro rail', 'subway', 'tram stop', 'tramway',
+            'airport', 'aerodrome', 'heliport', 'helipad', 'air strip',
+            'parking', 'car park', 'car shelter', 'garage', 'car wash',
+            'petrol pump', 'petrol bunk', 'gas station', 'fuel station', 'diesel', 'lpg',
+            'toll', 'toll booth', 'toll plaza', 'toll gate', 'toll road',
+            'signal', 'traffic signal', 'traffic light', 'traffic circle', 'traffic island',
+            'flyover', 'underpass', 'bypass', 'overpass', 'interchange', 'junction',
+            'roundabout', 'circle', 'chowk', 'square', 'crossing', 'intersection',
+            # Government/Administrative
+            'police station', 'police post', 'police booth', 'police line', 'police quarters',
+            'fire station', 'fire brigade', 'fire office', 'fire control',
+            'post office', 'head post office', 'sub post office', 'postal',
+            'court', 'courthouse', 'district court', 'high court', 'sessions court', 'tribunal',
+            'collector office', 'district office', 'taluk office', 'tehsil', 'revenue office',
+            'government office', 'govt office', 'municipal office', 'corporation office',
+            'passport office', 'immigration office', 'visa office', 'election office',
+            'ration office', 'fair price', 'pds', 'public distribution',
+            'employment exchange', 'job center', 'recruitment office',
+            # Residential
+            'nagar', 'colony', 'layout', 'extension', 'township', 'housing board',
+            'housing society', 'apartment', 'flat', 'building', 'complex', 'enclave',
+            'slum', 'chawl', 'basti', 'jhuggi', 'jhopri', 'jhuggi jhopri',
+            'ward', 'block', 'sector', 'zone', 'division', 'phase', 'pocket',
+            # Commercial (non-tourist)
+            'bank', 'atm', 'cash', 'money', 'currency exchange', 'forex',
+            'office', 'workspace', 'co-working', 'business center', 'business park',
+            'factory', 'mill', 'plant', 'industry', 'industrial', 'industrial area',
+            'warehouse', 'godown', 'depot', 'storage', 'cold storage',
+            'shop', 'store', 'market', 'bazaar', 'mandi', 'wholesale',
+            # Medical
+            'hospital', 'clinic', 'dispensary', 'health center', 'health centre',
+            'medical', 'pharmacy', 'chemist', 'drug store', 'medicine', 'medical store',
+            'nursing home', 'maternity', 'diagnostic', 'lab', 'pathology', 'radiology',
+            'blood bank', 'ambulance', 'mortuary',
+            # Education (non-tourist)
+            'school', 'college', 'university', 'institute', 'academy', 'coaching',
+            'kindergarten', 'nursery', 'play school', 'day care', 'creche',
+            'library', 'reading room', 'study center', 'study centre', 'tuition',
+            # Random structures
+            'statue', 'monument', 'memorial', 'pillar', 'column', 'obelisk',
+            'fountain', 'sculpture', 'mural', 'wall painting', 'graffiti',
+            'gate', 'gateway', 'arch', 'portal', 'entrance', 'exit',
+            'tower', 'minaret', 'clock tower', 'water tower', 'mobile tower',
+            'bridge', 'dam', 'barrage', 'weir', 'canal', 'lock', 'sluice',
+            'well', 'borewell', 'hand pump', 'tube well', 'step well',
+            'ground', 'playground', 'maidan', 'field', 'stadium', 'arena', 'sports complex',
+            'gym', 'fitness', 'yoga', 'sports', 'swimming pool', 'pool',
+            # Roads and paths
+            'road', 'street', 'lane', 'alley', 'path', 'walkway', 'sidewalk', 'footpath',
+            'highway', 'expressway', 'freeway', 'motorway', 'state highway', 'national highway',
+            'salai', 'theru', 'marg', 'road', 'street', 'lane', 'path',
+            # Other
+            'cemetery', 'graveyard', 'burial ground', 'crematorium', 'smashan', 'shamshan',
+            'slaughterhouse', 'abattoir', 'butcher', 'meat shop',
+            'prison', 'jail', 'detention center', 'correctional facility',
+            'military', 'army', 'navy', 'air force', 'cantonment', 'camp', 'barracks',
+            'quarantine', 'isolation center', 'vaccination center', 'testing center',
+            'electricity', 'power station', 'substation', 'transformer', 'grid station',
+            'telephone exchange', 'telecom', 'bsnl', 'airtel', 'jio', 'vodafone',
+            'sewage treatment', 'waste management', 'garbage dump', 'landfill',
+            'water works', 'water board', 'water authority', 'water supply',
         ]
         
         cleaned_items = []
         for item in items:
             if isinstance(item, dict):
-                name = str(item.get('name', '')).lower()
+                # Get name from various possible fields
+                name = str(item.get('name', '') or item.get('title', '') or item.get('display_name', '') or '').lower()
+                
+                # Get types/categories
+                types = set()
+                for key in ['types', 'categories', 'type', 'category', 'tags', 'place_types', 'primary_type']:
+                    if key in item:
+                        val = item[key]
+                        if isinstance(val, list):
+                            types.update([str(t).lower() for t in val])
+                        elif isinstance(val, str):
+                            types.add(val.lower())
+                
+                # Check if it's a good type (tourist attraction)
+                if types & good_types:
+                    cleaned_items.append(item)
+                    continue
+                
+                # Check if it's a bad type (non-tourist)
+                if types & bad_types:
+                    continue
+                
+                # If no types available or generic types, check name against deny list
                 if any(deny in name for deny in deny_words):
-                    continue # Skip this garbage
+                    continue
+                
+                # Check address for residential keywords
+                address = str(item.get('formatted_address', '') or item.get('address', '') or item.get('vicinity', '') or '').lower()
+                if any(deny in address for deny in ['nagar', 'colony', 'layout', 'extension', 'township', 'housing']):
+                    continue
+                
+                # If we get here, keep the item (conservative approach)
                 cleaned_items.append(item)
             else:
                 cleaned_items.append(item)
@@ -121,6 +279,23 @@ def clean_tool_output(tool_name, raw_text):
             
     except Exception:
         return raw_text
+
+# --- 🎨 BEAUTIFY OUTPUT ---
+def beautify_output(text):
+    """Enhances the LLM output for better display."""
+    if not text:
+        return text
+    
+    # Ensure proper spacing between sections
+    text = text.replace("###", "\n###")
+    
+    # Add emojis to section headers if not already present
+    text = text.replace("### Summary:", "### 📋 Summary:")
+    text = text.replace("### Itinerary:", "### 🗓️ Itinerary:")
+    text = text.replace("### Budget:", "### 💰 Budget:")
+    text = text.replace("### Disclaimer:", "### ⚠️ Disclaimer:")
+    
+    return text
 
 # --- SYSTEM PROMPT ---
 current_date = datetime.now().strftime("%Y-%m-%d")
@@ -226,7 +401,7 @@ async def run_agent(chat_history, trip_data, chat_container):
 
             # 3. Initialize LLM (OpenRouter)
             llm = ChatOpenAI(
-                model="meta-llama/llama-3.3-70b-instruct", # OpenRouter ID for Llama 3.3 70B
+                model="meta-llama/llama-3.3-70b-instruct",
                 api_key=api_key,
                 base_url="https://openrouter.ai/api/v1",
                 default_headers={"X-Title": "AI Travel Agent"},
@@ -271,38 +446,50 @@ async def run_agent(chat_history, trip_data, chat_container):
                 status_text.info(f"🛠️ Executing {len(ai_msg.tool_calls)} tool(s)...")
                 
                 for tool_call in ai_msg.tool_calls:
-                    status_text.info(f"🛠️ Executing: `{tool_call['name']}`")
-                    try:
-                        tool_result = await session.call_tool(tool_call['name'], arguments=tool_call['args'])
+                    # Show tool call in a collapsible status widget
+                    with st.status(f"🛠️ Calling: `{tool_call['name']}`", expanded=False) as status:
+                        status.write(f"**Input:**")
+                        status.json(tool_call['args'])
                         
-                        if tool_result.content and hasattr(tool_result.content[0], 'text'):
-                            content_text = tool_result.content[0].text
-                        else:
-                            content_text = str(tool_result)
-                            
-                        # 🚨 FILTER GARBAGE ATTRACTIONS BEFORE SAVING OR SENDING TO LLM
-                        content_text = clean_tool_output(tool_call['name'], content_text)
-                            
                         try:
-                            trip_data[tool_call['name']] = json.loads(content_text)
-                        except:
-                            trip_data[tool_call['name']] = content_text
+                            tool_result = await session.call_tool(tool_call['name'], arguments=tool_call['args'])
                             
-                        messages.append(ToolMessage(
-                            tool_call_id=tool_call['id'],
-                            content=content_text,
-                            name=tool_call['name']
-                        ))
-                    except Exception as e:
-                        error_msg = f"Error executing tool {tool_call['name']}: {str(e)}"
-                        messages.append(ToolMessage(
-                            tool_call_id=tool_call['id'],
-                            content=error_msg,
-                            name=tool_call['name']
-                        ))
+                            if tool_result.content and hasattr(tool_result.content[0], 'text'):
+                                content_text = tool_result.content[0].text
+                            else:
+                                content_text = str(tool_result)
+                                
+                            # 🚨 FILTER GARBAGE ATTRACTIONS BEFORE SAVING OR SENDING TO LLM
+                            content_text = clean_tool_output(tool_call['name'], content_text)
+                                
+                            try:
+                                trip_data[tool_call['name']] = json.loads(content_text)
+                            except:
+                                trip_data[tool_call['name']] = content_text
+                            
+                            # Show result in status
+                            status.write(f"**Output:**")
+                            display_text = content_text[:1000] + "..." if len(content_text) > 1000 else content_text
+                            status.text(display_text)
+                            
+                            status.update(label=f"✅ {tool_call['name']} completed", state="complete")
+                            
+                            messages.append(ToolMessage(
+                                tool_call_id=tool_call['id'],
+                                content=content_text,
+                                name=tool_call['name']
+                            ))
+                        except Exception as e:
+                            error_msg = f"Error executing tool {tool_call['name']}: {str(e)}"
+                            status.update(label=f"❌ {tool_call['name']} failed", state="error")
+                            messages.append(ToolMessage(
+                                tool_call_id=tool_call['id'],
+                                content=error_msg,
+                                name=tool_call['name']
+                            ))
             
             status_text.empty()
-            return ai_msg.content
+            return beautify_output(ai_msg.content)
 
         except Exception as e:
             status_text.empty()
