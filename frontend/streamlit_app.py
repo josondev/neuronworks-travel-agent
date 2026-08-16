@@ -49,15 +49,15 @@ st.markdown("""
 with st.sidebar:
     st.header("⚙️ Configuration")
     server_url = st.text_input("MCP Server URL", value="https://neuronworks-travel-agent.onrender.com/sse")
-    
+
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         st.error("⚠️ Set OPENROUTER_API_KEY env variable.")
         st.stop()
-        
+
     st.success("✅ Connected to OpenRouter")
     st.caption("Model: Llama 3.3 70B Instruct (Streaming)")
-    
+
     if st.button("🗑️ Clear Chat & Memory"):
         st.session_state.messages = []
         st.session_state.trip_data = {}
@@ -71,7 +71,7 @@ def create_pydantic_model_from_schema(name, schema):
     if "properties" in schema:
         required_fields = schema.get("required", [])
         for field_name, field_info in schema["properties"].items():
-            field_type = str 
+            field_type = str
             if field_info.get("type") == "number": field_type = float
             elif field_info.get("type") == "integer": field_type = int
             elif field_info.get("type") == "boolean": field_type = bool
@@ -182,45 +182,83 @@ def beautify_output(text: str) -> str:
 
 
 # =============================================================================
-# SYSTEM PROMPT
+# SYSTEM PROMPT (User's exact version)
 # =============================================================================
 current_date = datetime.now().strftime("%Y-%m-%d")
 
-SYSTEM_PROMPT_TEMPLATE = """You are an expert, factual AI Travel Agent. Plan realistic trips using ONLY real-time tool data.
+SYSTEM_PROMPT_TEMPLATE = """
+You are an expert, factual AI Travel Agent. Your goal is to plan realistic, bookable trips using **only** real-time data from your tools.
 
 ### 📅 CURRENT CONTEXT
-- Today's Date: {current_date}
-- Calculate relative dates ("next Friday") from today.
+- **Today's Date:** {current_date}
+- **Time Awareness:** When the user asks for "next Friday" or "in 2 days", calculate the exact date relative to {current_date}.
 
-### 🛡️ ZERO HALLUCINATION PROTOCOL
-1. TRUTH: If no results, say so. NEVER invent flights/hotels/prices.
-2. PRICING: Report EXACT prices. Never lower to fit budget. Label estimates clearly.
-3. CURRENCY: Keep as returned. No conversion unless asked.
+### 🛡️ CRITICAL RULES (DO NOT BREAK)
+### 🛡️ THE "ZERO HALLUCINATION" PROTOCOL
+1. **TRUTH OVER PLEASING:** If a tool returns no results (e.g., "No flights found"), you MUST tell the user: *"I could not find flights for these dates."* Do NOT invent a flight to make the user happy.
+   **PRICE INTEGRITY:** - You must report the **EXACT PRICE** returned by the `search_flights` and Other tools.
+   - **DO NOT LOWER THE PRICE** TO FIT THE USER'S "BUDGET" REQUEST. IF THE FLIGHT'S COST IS $100 AND THE USER WANTS "CHEAP", TELL THEM THE FLIGHT IS $100. DON'T INVENT A $10 FLIGHT.
+2. **PRICING HONESTY:** - **NEVER** invent a specific price (e.g., "$119") if the tool didn't provide it. 
+   - **EXCEPTION:** If the hotel tool returns a list of hotels but NO prices (or obvious mock prices), you may provide a **market estimate range** based on the hotel's tier (e.g., *"Typically $150-$200/night for a 5-star hotel in this city"*), but you MUST label it as an "Estimate".
+3. **CURRENCY:** Keep the currency as returned by the tool (USD/EUR/INR). Do not convert unless explicitly asked.
 
-### 🛠️ TOOL INSTRUCTIONS
-1. FLIGHTS: Convert cities to IATA codes (JFK, CDG, LHR, IXM, MAA). Dates: YYYY-MM-DD.
-2. HOTELS: Full city name. Taj/Hilton=Luxury, Inn/Hostel=Budget.
-3. PLACES: Categories: tourist_attractions, restaurants, entertainment, nature, shopping, religion. Radius: 5000/20000.
-4. BUDGET: Call LAST on first plan. Levels: budget/mid-range/luxury. Label "Generic estimate" + compute "Actual total" separately.
+### 🛠️ TOOL-SPECIFIC INSTRUCTIONS
 
-### 🔁 FOLLOW-UPS
-Use PRIOR TRIP DATA below. Don't re-call tools for "pick cheapest", "minimize cost". Only call for new cities/dates/explicit "search again".
+#### 1. ✈️ FLIGHTS (`search_flights`)
+- **CRITICAL:** The API fails if you send city names. You **MUST** convert them to 3-letter IATA codes.
+  - "New York" -> `JFK` or `EWR`
+  - "Paris" -> `CDG` or `ORY`
+  - "London" -> `LHR` or `LGW`
+  - "Madurai" -> `IXM`
+  - "Chennai" -> `MAA`
+  - *Internal Knowledge:* Use your training data to find codes for other cities.
+- **DATES:** Format strictly as `YYYY-MM-DD`.
+
+#### 2. 🏨 HOTELS (`Google Hotels`)
+- **INPUT:** Send the full city name (e.g., "Paris").
+- **ANALYSIS:** - If the tool returns hotels with names like "Taj", "Oberoi", "Hilton", treat them as **Luxury**.
+  - If names contain "Inn", "Guest House", "Hostel", treat them as **Budget**.
+  - **Budgeting:** If the API price seems fake (e.g., all hotels are exactly $80), use the hotel's category to estimate a realistic budget for the user.
+
+#### 3. 🎡 PLACES (`search_places`)
+- **STRICT CATEGORIES:** You may ONLY use these values for the `category` argument:
+  - `tourist_attractions` (Museums, monuments)
+  - `restaurants` (Food, dining)
+  - `entertainment` (Nightlife, theaters)
+  - `nature` (Parks, beaches)
+  - `shopping` (Malls, markets)
+  - `religion` (Temples, churches, mosques)
+- **RADIUS:** Default to 5000 (5km) for city center, or 20000 (20km) if the user asks for "nearby" spots.
+
+#### 4. 💰 BUDGET (`calculate_trip_budget`)
+- **EXECUTION:** Call this tool **LAST**, only on the *first* full plan for a trip — not on every follow-up.
+- **VALID `budgetLevel` VALUES:** the tool only accepts exactly `budget`, `mid-range`, or `luxury` (nothing else — e.g. NOT `"low"`, `"cheap"`). Map the user's wording: "cheap/low/minimum" -> `budget`, "moderate/comfortable" -> `mid-range`, "luxury/high-end" -> `luxury`. If you send an invalid value, the tool silently falls back to `mid-range` pricing, which will be wrong.
+- **IMPORTANT LIMITATION:** this tool does NOT accept real flight/hotel price as input — it only returns a generic estimate for the chosen `budgetLevel`. Do NOT claim you "fed it the real price." Instead, report the tool's estimate labeled as "Generic estimate," and **separately** compute and clearly label a "Actual total (from real data found)" by summing the exact flight price + (hotel nightly price × nights) + a stated daily-expense estimate. When the user asks you to minimize cost, the actual total is what should change — the generic tool estimate will not.
+
+### 🔁 FOLLOW-UP QUESTIONS (DO NOT RE-CALL TOOLS UNNECESSARILY)
+- Prior tool results for this conversation are included below under `PRIOR TRIP DATA`, if any exist. Treat that as ground truth.
+- If the user's follow-up can be answered by re-reasoning over `PRIOR TRIP DATA` (e.g. "pick the cheapest hotel from that list," "minimize cost," "which one is best for families") — DO NOT call any tool again. Just re-analyze the existing data and answer directly.
+- Only call a tool again if the user asks for something the existing data cannot answer — a different city, different dates, a different category of place, or explicitly asks you to "search again" / "check for more/cheaper options."
 
 ### 📝 OUTPUT FORMAT
-1. Summary 2. Itinerary 3. Budget (Generic + Actual) 4. Disclaimer
+1. **Summary:** A quick breakdown of flight options and hotel recommendations.
+2. **Itinerary:** A day-by-day plan using the specific *Attractions* found by `search_places`.
+3. **Budget:** Both the generic tool estimate and the actual computed total (see above).
+4. **Disclaimer:** "Prices and availability are subject to change."
 
-{prior_data_section}"""
+{prior_data_section}
+"""
 
 
 # =============================================================================
 # STREAMING AGENT (Async Generator)
 # =============================================================================
 async def run_agent_streaming(
-    chat_history: list, 
+    chat_history: list,
     trip_data: dict
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
-    Yields events: 
+    Yields events:
       {"type": "thinking", "message": str}
       {"type": "tool_start", "name": str, "args": dict}
       {"type": "tool_end", "name": str, "success": bool, "preview": str}
@@ -228,7 +266,7 @@ async def run_agent_streaming(
       {"type": "done", "full_response": str}
       {"type": "error", "message": str}
     """
-    
+
     async with AsyncExitStack() as stack:
         try:
             # --- Connect ---
@@ -278,7 +316,7 @@ async def run_agent_streaming(
             max_iterations = 5
             for iteration in range(max_iterations):
                 yield {"type": "thinking", "message": f"🤔 Reasoning... (step {iteration + 1})"}
-                
+
                 ai_msg = await llm_with_tools.ainvoke(messages)
                 messages.append(ai_msg)
 
@@ -289,26 +327,26 @@ async def run_agent_streaming(
                 # Execute each tool call with live status
                 for tool_call in ai_msg.tool_calls:
                     yield {"type": "tool_start", "name": tool_call['name'], "args": tool_call['args']}
-                    
+
                     try:
                         result = await session.call_tool(tool_call['name'], arguments=tool_call['args'])
                         content_text = (
-                            result.content[0].text 
-                            if result.content and hasattr(result.content[0], 'text') 
+                            result.content[0].text
+                            if result.content and hasattr(result.content[0], 'text')
                             else str(result)
                         )
                         content_text = clean_tool_output(tool_call['name'], content_text)
-                        
+
                         try: trip_data[tool_call['name']] = json.loads(content_text)
                         except: trip_data[tool_call['name']] = content_text
-                        
+
                         messages.append(ToolMessage(
                             tool_call_id=tool_call['id'],
                             content=content_text, name=tool_call['name']
                         ))
                         preview = content_text[:300] + "..." if len(content_text) > 300 else content_text
                         yield {"type": "tool_end", "name": tool_call['name'], "success": True, "preview": preview}
-                        
+
                     except Exception as e:
                         err = f"Error: {str(e)}"
                         messages.append(ToolMessage(
@@ -355,29 +393,30 @@ if prompt := st.chat_input("Where do you want to go?"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        # Placeholder for streamed content
         response_placeholder = st.empty()
-        accumulated = ""
-        active_status = None  # Track current tool status widget
-        
+
         async def consume_stream():
-            nonlocal accumulated, active_status
-            
-            async for event in run_agent_streaming(st.session_state.messages, st.session_state.trip_data):
+            # Variables are LOCAL to this function — no nonlocal needed
+            accumulated = ""
+            active_status = None
+
+            async for event in run_agent_streaming(
+                st.session_state.messages,
+                st.session_state.trip_data
+            ):
                 etype = event["type"]
-                
+
                 if etype == "thinking":
-                    # Show thinking as a temporary info box
                     response_placeholder.info(event["message"])
-                    
+
                 elif etype == "tool_start":
-                    # Close previous status if open
                     if active_status is not None:
                         active_status.update(state="complete")
-                    # Create new collapsible status widget
-                    active_status = st.status(f"🛠️ Calling `{event['name']}`...", expanded=False)
+                    active_status = st.status(
+                        f"🛠️ Calling `{event['name']}`...", expanded=False
+                    )
                     active_status.json(event["args"])
-                    
+
                 elif etype == "tool_end":
                     if active_status is not None:
                         label = f"✅ {event['name']}" if event["success"] else f"❌ {event['name']}"
@@ -385,26 +424,30 @@ if prompt := st.chat_input("Where do you want to go?"):
                         active_status.text(event["preview"])
                         active_status.update(label=label, state=state)
                         active_status = None
-                        
+
                 elif etype == "token":
-                    # Stream tokens into markdown placeholder
                     accumulated += event["content"]
-                    response_placeholder.markdown(beautify_output(accumulated) + "▌")
-                    
+                    response_placeholder.markdown(
+                        beautify_output(accumulated) + "▌"
+                    )
+
                 elif etype == "done":
                     if active_status is not None:
                         active_status.update(state="complete")
                     response_placeholder.markdown(event["full_response"])
                     return event["full_response"]
-                    
+
                 elif etype == "error":
                     if active_status is not None:
                         active_status.update(state="error")
                     response_placeholder.error(event["message"])
                     return event["message"]
-            
+
             return accumulated
 
         final_response = asyncio.run(consume_stream())
         if final_response:
-            st.session_state.messages.append({"role": "assistant", "content": final_response})
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": final_response
+            })
