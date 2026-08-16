@@ -9,10 +9,14 @@ from datetime import datetime
 
 from mcp import ClientSession
 from mcp.client.sse import sse_client
-from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
 from langchain_core.tools import StructuredTool
 
+# 1. Apply Async Patch for Streamlit
+nest_asyncio.apply()
+
+# 2. Page Config & UI
 st.markdown("""
 <style>
 :root{--bg:#080b14;--border:rgba(255,255,255,.10);--muted:#94a3b8}
@@ -33,27 +37,25 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-
-# 1. Apply Async Patch for Streamlit
-nest_asyncio.apply()
-
-# 3. Sidebar Configuration
+# 3. Sidebar Configuration (Environment Variables)
 with st.sidebar:
     st.header("Configuration")
     server_url = st.text_input("MCP Server URL", value="https://neuronworks-travel-agent.onrender.com/sse")
     
-    api_key = os.environ.get("GROQ_API_KEY")
+    # 🚨 Read API Key from OS Environment Variables
+    api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
-        api_key = st.text_input("Groq API Key", type="password")
-    
-    if not api_key:
-        st.warning("⚠️ Please enter a Groq API Key to continue.")
+        st.error("⚠️ Please set the OPENROUTER_API_KEY environment variable.")
         st.stop()
+        
+    st.success("✅ Connected to OpenRouter")
     
-    os.environ["GROQ_API_KEY"] = api_key
-    st.success("✅ Ready to fly!")
+    if st.button("🗑️ Clear Chat & Memory"):
+        st.session_state.messages = []
+        st.session_state.trip_data = {}
+        st.rerun()
 
-# --- HELPER: Convert JSON Schema to Pydantic ---
+# --- HELPER: Convert JSON Schema to Pydantic (Token Optimized) ---
 def create_pydantic_model_from_schema(name, schema):
     fields = {}
     if "properties" in schema:
@@ -65,11 +67,60 @@ def create_pydantic_model_from_schema(name, schema):
             elif field_info.get("type") == "boolean": field_type = bool
             
             is_required = field_name in required_fields
+            desc = field_info.get("description", "")
+            if len(desc) > 100: desc = desc[:100] + "..."
+            
             fields[field_name] = (
                 field_type, 
-                Field(description=field_info.get("description", ""), default=... if is_required else None)
+                Field(description=desc, default=... if is_required else None)
             )
     return create_model(f"{name}Input", **fields)
+
+# --- 🛡️ GARBAGE FILTER: Remove Waterworks, Statues, etc. ---
+def clean_tool_output(tool_name, raw_text):
+    """Intercepts tool results and deletes infrastructure/statues before the LLM sees them."""
+    try:
+        data = json.loads(raw_text)
+        items, wrapper_key = [], None
+        
+        if isinstance(data, list): items = data
+        elif isinstance(data, dict):
+            for k, v in data.items():
+                if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
+                    items = v
+                    wrapper_key = k
+                    break
+        
+        if not items: return raw_text
+            
+        # Deny list for non-tourist infrastructure (specifically targeting the garbage you saw)
+        deny_words = [
+            'water works', 'waterworks', 'statue', 'thorana vayil', 'nagar', 'colony', 'layout', 
+            'bus stop', 'bus station', 'railway', 'parking', 'signal', 'flyover', 
+            'underpass', 'bypass', 'hospital', 'police station', 'post office',
+            'circle', 'chowk', 'junction', 'roundabout', 'salai', 'theru',
+            'memorial', 'pillar', 'mandapam', 'township', 'extension', 'ward',
+            'block', 'car shelter', 'subway', 'metro'
+        ]
+        
+        cleaned_items = []
+        for item in items:
+            if isinstance(item, dict):
+                name = str(item.get('name', '')).lower()
+                if any(deny in name for deny in deny_words):
+                    continue # Skip this garbage
+                cleaned_items.append(item)
+            else:
+                cleaned_items.append(item)
+                
+        if wrapper_key:
+            data[wrapper_key] = cleaned_items
+            return json.dumps(data)
+        else:
+            return json.dumps(cleaned_items)
+            
+    except Exception:
+        return raw_text
 
 # --- SYSTEM PROMPT ---
 current_date = datetime.now().strftime("%Y-%m-%d")
@@ -148,7 +199,6 @@ async def run_agent(chat_history, trip_data, chat_container):
             transport = await stack.enter_async_context(sse_client(server_url))
             session = await stack.enter_async_context(ClientSession(transport[0], transport[1]))
             
-            # Initialize session (required for modern MCP clients)
             if hasattr(session, "initialize"):
                 await session.initialize()
                 
@@ -160,28 +210,37 @@ async def run_agent(chat_history, trip_data, chat_container):
 
             for tool in mcp_tools.tools:
                 input_model = create_pydantic_model_from_schema(tool.name, tool.input_schema)
+                tool_desc = tool.description or ""
+                if len(tool_desc) > 150: tool_desc = tool_desc[:150] + "..."
+                
                 lc_tool = StructuredTool.from_function(
                     func=None,
-                    coroutine=lambda *args, **kwargs: None, # Dummy, we call session directly
+                    coroutine=lambda *args, **kwargs: None,
                     name=tool.name,
-                    description=tool.description,
+                    description=tool_desc,
                     args_schema=input_model
                 )
                 langchain_tools.append(lc_tool)
             
             status_text.info(f"🛠️ Found {len(langchain_tools)} tools. Thinking...")
 
-            # 3. Initialize LLM
-            llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+            # 3. Initialize LLM (OpenRouter)
+            llm = ChatOpenAI(
+                model="meta-llama/llama-3.3-70b-instruct", # OpenRouter ID for Llama 3.3 70B
+                api_key=api_key,
+                base_url="https://openrouter.ai/api/v1",
+                default_headers={"X-Title": "AI Travel Agent"},
+                temperature=0
+            )
             llm_with_tools = llm.bind_tools(langchain_tools)
 
             # 4. Construct Messages
             prior_data_section = ""
             if trip_data:
-                prior_json = json.dumps(trip_data, indent=2)
-                if len(prior_json) > 4000:
-                    prior_json = prior_json[:4000] + "\n... [truncated] ..."
-                prior_data_section = f"### PRIOR TRIP DATA\n```json\n{prior_json}\n```"
+                prior_json = json.dumps(trip_data, separators=(',', ':'))
+                if len(prior_json) > 3000:
+                    prior_json = prior_json[:3000] + "...[truncated]"
+                prior_data_section = f"### PRIOR TRIP DATA\n{prior_json}"
             
             system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
                 current_date=current_date,
@@ -189,9 +248,7 @@ async def run_agent(chat_history, trip_data, chat_container):
             )
 
             messages = [SystemMessage(content=system_prompt)]
-            
-            # Add chat history (limit to last 10 turns to save tokens)
-            history = [m for m in chat_history if m["role"] in ("user", "assistant")][-10:]
+            history = [m for m in chat_history if m["role"] in ("user", "assistant")][-4:]
             for m in history:
                 if m["role"] == "user":
                     messages.append(HumanMessage(content=m["content"]))
@@ -208,7 +265,6 @@ async def run_agent(chat_history, trip_data, chat_container):
                 ai_msg = await llm_with_tools.ainvoke(messages)
                 messages.append(ai_msg)
 
-                # If no tool calls, we have our final answer
                 if not ai_msg.tool_calls:
                     break 
                 
@@ -217,7 +273,6 @@ async def run_agent(chat_history, trip_data, chat_container):
                 for tool_call in ai_msg.tool_calls:
                     status_text.info(f"🛠️ Executing: `{tool_call['name']}`")
                     try:
-                        # Execute Tool directly via MCP session
                         tool_result = await session.call_tool(tool_call['name'], arguments=tool_call['args'])
                         
                         if tool_result.content and hasattr(tool_result.content[0], 'text'):
@@ -225,7 +280,9 @@ async def run_agent(chat_history, trip_data, chat_container):
                         else:
                             content_text = str(tool_result)
                             
-                        # Save to trip_data cache for follow-ups
+                        # 🚨 FILTER GARBAGE ATTRACTIONS BEFORE SAVING OR SENDING TO LLM
+                        content_text = clean_tool_output(tool_call['name'], content_text)
+                            
                         try:
                             trip_data[tool_call['name']] = json.loads(content_text)
                         except:
@@ -248,8 +305,11 @@ async def run_agent(chat_history, trip_data, chat_container):
             return ai_msg.content
 
         except Exception as e:
-            status_text.error(f"Error: {str(e)}")
-            return f"An error occurred: {str(e)}"
+            status_text.empty()
+            error_str = str(e)
+            if "413" in error_str or "Request too large" in error_str or "rate_limit_exceeded" in error_str:
+                return "⚠️ **Context Limit Exceeded:** The conversation history and tool data became too large. Please click **'🗑️ Clear Chat & Memory'** in the sidebar to start a fresh trip."
+            return f"An error occurred: {error_str}"
 
 # --- UI: Chat Interface ---
 if "messages" not in st.session_state:
