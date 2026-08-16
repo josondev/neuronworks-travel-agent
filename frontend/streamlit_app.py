@@ -18,7 +18,7 @@ from langchain_core.tools import StructuredTool
 nest_asyncio.apply()
 
 # =============================================================================
-# UI & STYLING (Dark + Light mode)
+# UI & STYLING
 # =============================================================================
 st.set_page_config(page_title="Neuronworks Travel Agent", page_icon="✈️", layout="wide")
 
@@ -39,6 +39,10 @@ st.markdown("""
     --info-bg: rgba(37, 99, 235, 0.15);
     --info-border: rgba(37, 99, 235, 0.4);
     --info-text: #93c5fd;
+    --input-bg: rgba(15, 23, 42, 0.9);
+    --input-border: rgba(255, 255, 255, 0.15);
+    --input-focus-border: rgba(99, 102, 241, 0.6);
+    --input-placeholder: #64748b;
 }
 
 /* ===== LIGHT MODE ===== */
@@ -57,6 +61,10 @@ st.markdown("""
         --info-bg: rgba(37, 99, 235, 0.08);
         --info-border: rgba(37, 99, 235, 0.25);
         --info-text: #1d4ed8;
+        --input-bg: rgba(255, 255, 255, 0.95);
+        --input-border: rgba(0, 0, 0, 0.15);
+        --input-focus-border: rgba(99, 102, 241, 0.6);
+        --input-placeholder: #94a3b8;
     }
 }
 
@@ -65,7 +73,6 @@ st.markdown("""
                 radial-gradient(circle at 90% 10%, rgba(124, 58, 237, 0.36), transparent 32%),
                 var(--bg);
 }
-
 @media (prefers-color-scheme: light) {
     .stApp {
         background: radial-gradient(circle at 10% 0%, rgba(37, 99, 235, 0.08), transparent 34%),
@@ -82,13 +89,13 @@ st.markdown("""
 }
 .hero h1 { margin: 0; color: var(--text-primary); font-size: 2.2rem; }
 .hero p { margin: 8px 0; color: var(--text-secondary); }
-
 .pill {
     display: inline-block; padding: 5px 11px; border-radius: 999px;
     background: var(--pill-bg); color: var(--pill-text);
     font-size: 0.75rem; border: 1px solid var(--border);
 }
 
+/* Chat messages */
 div[data-testid="stChatMessage"] {
     border: 1px solid var(--border); border-radius: 18px;
     padding: 1rem 1.1rem; margin: 0.7rem 0; background: var(--bg-secondary);
@@ -106,6 +113,7 @@ div[data-testid="stChatMessage"] code {
     color: var(--text-primary) !important;
 }
 
+/* Tool status widgets */
 div[data-testid="stStatus"] {
     border: 1px solid var(--border); border-radius: 12px;
     margin: 0.5rem 0; background: var(--status-bg);
@@ -120,6 +128,7 @@ div[data-testid="stStatus"] code {
     color: var(--text-primary) !important;
 }
 
+/* Info/thinking alerts */
 div[data-testid="stAlert"] {
     background: var(--info-bg) !important;
     border: 1px solid var(--info-border) !important;
@@ -130,6 +139,7 @@ div[data-testid="stAlert"] span {
     color: var(--info-text) !important;
 }
 
+/* Sidebar */
 section[data-testid="stSidebar"] {
     background: var(--bg-secondary); border-right: 1px solid var(--border);
 }
@@ -142,10 +152,59 @@ section[data-testid="stSidebar"] h3 {
     color: var(--text-primary) !important;
 }
 
-input, textarea {
-    color: var(--text-primary) !important;
+/* ===== CHAT INPUT STYLING ===== */
+div[data-testid="stChatInput"] {
     background: var(--bg-secondary) !important;
-    border: 1px solid var(--border) !important;
+    border: 1px solid var(--input-border) !important;
+    border-radius: 16px !important;
+    padding: 0.4rem 0.6rem !important;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+div[data-testid="stChatInput"]:focus-within {
+    border-color: var(--input-focus-border) !important;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15) !important;
+}
+div[data-testid="stChatInput"] textarea {
+    color: var(--text-primary) !important;
+    background: transparent !important;
+    font-size: 1rem !important;
+    line-height: 1.5 !important;
+    padding: 0.5rem 0.4rem !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+div[data-testid="stChatInput"] textarea::placeholder {
+    color: var(--input-placeholder) !important;
+    font-style: italic !important;
+}
+div[data-testid="stChatInput"] button {
+    background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
+    border: none !important;
+    border-radius: 12px !important;
+    color: white !important;
+    width: 36px !important;
+    height: 36px !important;
+    min-width: 36px !important;
+    transition: opacity 0.2s ease !important;
+}
+div[data-testid="stChatInput"] button:hover {
+    opacity: 0.85 !important;
+}
+div[data-testid="stChatInput"] button svg {
+    fill: white !important;
+    stroke: white !important;
+}
+
+/* General input fields (sidebar etc.) */
+input, textarea:not(div[data-testid="stChatInput"] textarea) {
+    color: var(--text-primary) !important;
+    background: var(--input-bg) !important;
+    border: 1px solid var(--input-border) !important;
+    border-radius: 10px !important;
+}
+input:focus, textarea:focus {
+    border-color: var(--input-focus-border) !important;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15) !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -183,11 +242,9 @@ with st.sidebar:
 # =============================================================================
 _mcp_tool_schemas: dict = {}
 
-# Timeout constants (seconds)
 MCP_CONNECT_TIMEOUT = 15
 MCP_TOOL_TIMEOUT = 30
 LLM_INVOKE_TIMEOUT = 60
-LLM_STREAM_TIMEOUT = 90
 
 
 def create_pydantic_model_from_schema(name, schema):
@@ -207,15 +264,7 @@ def create_pydantic_model_from_schema(name, schema):
 
 
 def normalize_tool_args(tool_name: str, args: dict) -> dict:
-    """
-    Coerce LLM-generated arguments to match the MCP tool's expected JSON schema.
-    Handles:
-      - string "Goa" → ["Goa"] when schema expects array
-      - string "['Goa', 'Pondicherry']" → ["Goa", "Pondicherry"] (stringified list)
-      - string "[\\"Goa\\", \\"Pondicherry\\"]" → ["Goa", "Pondicherry"] (JSON string)
-      - string "4" → 4 when schema expects integer
-      - string "true" → True when schema expects boolean
-    """
+    """Coerce LLM-generated arguments to match the MCP tool's expected JSON schema."""
     schema = _mcp_tool_schemas.get(tool_name, {})
     properties = schema.get("properties", {})
     normalized = dict(args)
@@ -225,41 +274,25 @@ def normalize_tool_args(tool_name: str, args: dict) -> dict:
             continue
         expected_type = properties[key].get("type", "")
 
-        # --- Array coercion ---
         if expected_type == "array":
             if isinstance(value, str):
-                # Try JSON parse first: '["Goa", "Pondicherry"]'
                 try:
                     parsed = json.loads(value)
                     if isinstance(parsed, list):
-                        normalized[key] = parsed
-                        continue
-                except (json.JSONDecodeError, TypeError):
-                    pass
-                # Try Python literal parse: "['Goa', 'Pondicherry']"
+                        normalized[key] = parsed; continue
+                except (json.JSONDecodeError, TypeError): pass
                 try:
                     parsed = ast.literal_eval(value)
                     if isinstance(parsed, list):
-                        normalized[key] = parsed
-                        continue
-                except (ValueError, SyntaxError):
-                    pass
-                # Fallback: wrap single string in array
+                        normalized[key] = parsed; continue
+                except (ValueError, SyntaxError): pass
                 normalized[key] = [value]
-            elif isinstance(value, list):
-                pass  # already correct
-
-        # --- Integer coercion ---
         elif expected_type == "integer" and isinstance(value, str):
             try: normalized[key] = int(value)
             except ValueError: pass
-
-        # --- Number coercion ---
         elif expected_type == "number" and isinstance(value, str):
             try: normalized[key] = float(value)
             except ValueError: pass
-
-        # --- Boolean coercion ---
         elif expected_type == "boolean" and isinstance(value, str):
             normalized[key] = value.lower() in ("true", "1", "yes")
 
@@ -279,15 +312,12 @@ def clean_tool_output(tool_name: str, raw_text: str) -> str:
         elif isinstance(data, dict):
             for key in ['results', 'places', 'data', 'items', 'attractions', 'locations', 'candidates']:
                 if key in data and isinstance(data[key], list):
-                    items, wrapper_key = data[key], key
-                    break
+                    items, wrapper_key = data[key], key; break
             if not items:
                 for k, v in data.items():
                     if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                        items, wrapper_key = v, k
-                        break
-        if not items:
-            return raw_text
+                        items, wrapper_key = v, k; break
+        if not items: return raw_text
 
         good_types = {
             'tourist_attraction', 'museum', 'art_gallery', 'park', 'national_park',
@@ -335,15 +365,11 @@ def clean_tool_output(tool_name: str, raw_text: str) -> str:
                     val = item.get(key)
                     if isinstance(val, list): types.update(str(t).lower() for t in val)
                     elif isinstance(val, str): types.add(val.lower())
-                if types & good_types:
-                    cleaned.append(item); continue
-                if types & bad_types:
-                    continue
-                if any(d in name for d in deny_words):
-                    continue
+                if types & good_types: cleaned.append(item); continue
+                if types & bad_types: continue
+                if any(d in name for d in deny_words): continue
                 addr = str(item.get('formatted_address', '') or item.get('address', '') or '').lower()
-                if any(d in addr for d in ['nagar', 'colony', 'layout', 'extension', 'township']):
-                    continue
+                if any(d in addr for d in ['nagar', 'colony', 'layout', 'extension', 'township']): continue
                 cleaned.append(item)
             else:
                 cleaned.append(item)
@@ -363,6 +389,66 @@ def beautify_output(text: str) -> str:
     text = text.replace("### Budget:", "### 💰 Budget:")
     text = text.replace("### Disclaimer:", "### ⚠️ Disclaimer:")
     return text
+
+
+def synthesize_from_trip_data(trip_data: dict) -> str:
+    """
+    When the LLM returns empty after tool calls, build a basic response
+    from the cached tool data so the user isn't left with nothing.
+    """
+    if not trip_data:
+        return "I gathered data but couldn't generate a summary. Please try again."
+
+    lines = ["## 📋 Trip Summary (auto-generated from tool data)\n"]
+
+    for tool_name, data in trip_data.items():
+        lines.append(f"### 🔧 {tool_name}")
+        if isinstance(data, dict):
+            # Try to extract useful summary fields
+            if 'total_budget' in data:
+                lines.append(f"- **Total Budget Estimate:** {data.get('currency', 'USD')} {data['total_budget']}")
+                breakdown = data.get('breakdown', {})
+                for k, v in breakdown.items():
+                    lines.append(f"  - {k.replace('_', ' ').title()}: {data.get('currency', 'USD')} {v}")
+            elif 'flights' in str(data)[:50].lower() or tool_name == 'search_flights':
+                # Show first few flights
+                items = data if isinstance(data, list) else data.get('results', data.get('flights', []))
+                if isinstance(items, list):
+                    for item in items[:3]:
+                        if isinstance(item, dict):
+                            airline = item.get('airline', item.get('name', 'Unknown'))
+                            price = item.get('price', 'N/A')
+                            currency = item.get('currency', 'USD')
+                            lines.append(f"- **{airline}**: {currency} {price}")
+            elif tool_name == 'search_hotels' or 'hotel' in tool_name.lower():
+                items = data if isinstance(data, list) else data.get('results', data.get('hotels', []))
+                if isinstance(items, list):
+                    for item in items[:3]:
+                        if isinstance(item, dict):
+                            name = item.get('name', 'Unknown')
+                            price = item.get('price', 'N/A')
+                            currency = item.get('currency', 'USD')
+                            rating = item.get('rating', 'N/A')
+                            lines.append(f"- **{name}**: {currency} {price}/night (Rating: {rating})")
+            else:
+                # Generic: show truncated JSON
+                preview = json.dumps(data, separators=(',', ':'))[:500]
+                lines.append(f"```\n{preview}\n```")
+        elif isinstance(data, list):
+            for item in data[:3]:
+                if isinstance(item, dict):
+                    name = item.get('name', item.get('airline', 'Unknown'))
+                    price = item.get('price', '')
+                    if price:
+                        lines.append(f"- **{name}**: {item.get('currency', 'USD')} {price}")
+                    else:
+                        lines.append(f"- **{name}**")
+        else:
+            lines.append(f"```\n{str(data)[:500]}\n```")
+        lines.append("")
+
+    lines.append("\n⚠️ *This summary was auto-generated because the model couldn't produce a response. Prices and availability are subject to change.*")
+    return "\n".join(lines)
 
 
 # =============================================================================
@@ -486,7 +572,7 @@ async def run_agent_streaming(
                 langchain_tools.append(lc_tool)
 
             if not langchain_tools:
-                yield {"type": "error", "message": "❌ No tools discovered from MCP server. The server may be misconfigured."}
+                yield {"type": "error", "message": "❌ No tools discovered from MCP server."}
                 return
 
             # --- Build Messages ---
@@ -519,6 +605,7 @@ async def run_agent_streaming(
             max_iterations = 5
             tool_call_counts: dict = {}
             MAX_CALLS_PER_TOOL = 2
+            had_tool_calls = False
 
             for iteration in range(max_iterations):
                 yield {"type": "thinking", "message": f"🤔 Reasoning... (step {iteration + 1})"}
@@ -529,7 +616,7 @@ async def run_agent_streaming(
                         timeout=LLM_INVOKE_TIMEOUT
                     )
                 except asyncio.TimeoutError:
-                    yield {"type": "error", "message": f"❌ LLM response timed out after {LLM_INVOKE_TIMEOUT}s. Try a simpler query or retry."}
+                    yield {"type": "error", "message": f"❌ LLM response timed out after {LLM_INVOKE_TIMEOUT}s."}
                     return
                 except Exception as e:
                     yield {"type": "error", "message": f"❌ LLM error: {str(e)}"}
@@ -546,8 +633,7 @@ async def run_agent_streaming(
                        (content_stripped.startswith("{") and '"type": "function"' in content_stripped):
                         try:
                             parsed = json.loads(content_stripped)
-                            if isinstance(parsed, dict):
-                                parsed = [parsed]
+                            if isinstance(parsed, dict): parsed = [parsed]
                             for tc in parsed:
                                 if tc.get("type") == "function":
                                     fn = tc.get("function", {})
@@ -563,11 +649,11 @@ async def run_agent_streaming(
                 if not tool_calls_to_execute:
                     break
 
-                # --- Execute each tool call ---
+                had_tool_calls = True
+
                 for tool_call in tool_calls_to_execute:
                     tool_name = tool_call['name']
 
-                    # Per-tool retry cap
                     tool_call_counts[tool_name] = tool_call_counts.get(tool_name, 0) + 1
                     if tool_call_counts[tool_name] > MAX_CALLS_PER_TOOL:
                         skip_msg = f"Skipped {tool_name}: already called {MAX_CALLS_PER_TOOL} times this turn."
@@ -577,10 +663,8 @@ async def run_agent_streaming(
                         ))
                         continue
 
-                    # Normalize arguments
                     raw_args = tool_call['args']
                     normalized_args = normalize_tool_args(tool_name, raw_args)
-
                     yield {"type": "tool_start", "name": tool_name, "args": normalized_args}
 
                     try:
@@ -611,7 +695,6 @@ async def run_agent_streaming(
                             tool_call_id=tool_call['id'], content=err, name=tool_name
                         ))
                         yield {"type": "tool_end", "name": tool_name, "success": False, "preview": err}
-
                     except Exception as e:
                         err = f"Error: {str(e)}"
                         messages.append(ToolMessage(
@@ -619,8 +702,13 @@ async def run_agent_streaming(
                         ))
                         yield {"type": "tool_end", "name": tool_name, "success": False, "preview": err}
 
-            # --- Stream Final Answer Token-by-Token ---
+            # =============================================================
+            # FINAL ANSWER: Try streaming first, fall back to ainvoke,
+            # then fall back to synthesized response from tool data
+            # =============================================================
             full_response = ""
+
+            # Attempt 1: Stream tokens
             try:
                 async for chunk in llm_with_tools.astream(messages):
                     if chunk.content:
@@ -631,22 +719,34 @@ async def run_agent_streaming(
                             continue
                         full_response += chunk.content
                         yield {"type": "token", "content": chunk.content}
-            except asyncio.TimeoutError:
-                if full_response:
-                    yield {"type": "done", "full_response": beautify_output(full_response) + "\n\n⚠️ *Response was truncated due to timeout.*"}
-                else:
-                    yield {"type": "error", "message": "❌ LLM streaming timed out with no content generated."}
-                return
-            except Exception as e:
-                if full_response:
-                    yield {"type": "done", "full_response": beautify_output(full_response) + f"\n\n⚠️ *Stream interrupted: {str(e)}*"}
-                else:
-                    yield {"type": "error", "message": f"❌ Streaming error: {str(e)}"}
-                return
+            except Exception:
+                pass  # Fall through to attempt 2
 
+            # Attempt 2: If streaming yielded nothing, try ainvoke
             if not full_response.strip():
-                yield {"type": "error", "message": "⚠️ The model returned an empty response. Try rephrasing your query."}
-                return
+                yield {"type": "thinking", "message": "📝 Generating summary..."}
+                try:
+                    fallback_msg = await asyncio.wait_for(
+                        llm_with_tools.ainvoke(messages),
+                        timeout=LLM_INVOKE_TIMEOUT
+                    )
+                    if fallback_msg.content and fallback_msg.content.strip():
+                        full_response = fallback_msg.content
+                        # Stream the fallback response character-by-character for UX
+                        for char in full_response:
+                            yield {"type": "token", "content": char}
+                except Exception:
+                    pass  # Fall through to attempt 3
+
+            # Attempt 3: If LLM still returned nothing, synthesize from tool data
+            if not full_response.strip():
+                if had_tool_calls and trip_data:
+                    full_response = synthesize_from_trip_data(trip_data)
+                    for char in full_response:
+                        yield {"type": "token", "content": char}
+                else:
+                    yield {"type": "error", "message": "⚠️ The model returned an empty response. Try rephrasing your query."}
+                    return
 
             yield {"type": "done", "full_response": beautify_output(full_response)}
 
