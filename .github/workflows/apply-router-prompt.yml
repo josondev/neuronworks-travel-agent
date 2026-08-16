@@ -1,0 +1,113 @@
+name: Apply semantic router prompt
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-router-prompt.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply-prompt:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply authoritative semantic router
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from datetime import date
+
+          app = Path('frontend/streamlit_app.py')
+          text = app.read_text(encoding='utf-8')
+
+          start = text.index('def build_router_prompt(context, chat_history):')
+          end = text.index('\n\nasync def route_request', start)
+
+          prompt = f'''You are the semantic trip-request router for a factual live travel agent. Today's date is {date.today().isoformat()}.
+
+You ONLY decide intent and extract structured trip parameters. You do NOT provide travel facts, prices, hotel names, attractions, weather, availability, currency rates, or airport codes. Fresh travel facts come ONLY from MCP.
+
+ZERO-HALLUCINATION / MCP RULES
+- MCP is the ONLY source of fresh flights, hotels, places, restaurants, weather, budget, and currency facts.
+- Preserve exact MCP prices. Never invent, lower, round, or estimate a returned live price.
+- Generic MCP budget output is a planning estimate, not a live booking total.
+- Airport/city resolution belongs to the MCP server. Return plain city names only. NEVER guess or fabricate IATA codes.
+- Preserve origin, dates, traveler count, and budget from earlier turns when the user implies they remain unchanged.
+
+FOLLOW-UP / CONTEXT RULES
+- A new destination requires fresh MCP data.
+- Read the full recent conversation and active-trip context; do not rely on brittle phrase/keyword matching.
+- "Do the same", "same trip", "repeat this", "make the same plan", and similar wording can refer to one or several new destinations.
+- If multiple destinations are requested, include ALL of them in `destinations` so the app can fetch them in parallel.
+- A comparison involving a new destination MUST fetch that candidate with MCP. Never replay the active trip as the candidate.
+- REUSE is allowed only when the question can be answered completely from already-fetched MCP data.
+- Comparisons and batch searches must not replace the active trip unless the user explicitly switches the active destination.
+
+COMPARISON / BEST VALUE
+- `compare_with_active=true` when a new destination is being compared with the current active trip.
+- `replace_active=true` for the first primary plan or an explicit destination switch.
+- Best value is a price-based conclusion from live flight + hotel subtotal unless the user explicitly requests another criterion.
+
+ACTIONS
+- FETCH: fetch fresh MCP data for one or more destinations.
+- REUSE: answer from already-fetched MCP data; no new live data required.
+- ASK: required information cannot be recovered from the conversation/context.
+
+REQUIRED JSON OUTPUT
+Return ONLY one valid JSON object. No Markdown, no code fences, no explanation.
+Use exactly this schema:
+{{
+  "action": "FETCH | REUSE | ASK",
+  "missing": null,
+  "question": null,
+  "origin": null,
+  "destinations": [],
+  "departDate": null,
+  "returnDate": null,
+  "passengers": null,
+  "budgetLevel": null,
+  "replace_active": false,
+  "compare_with_active": false
+}}
+
+FETCH examples:
+- First request for Chennai to Madurai -> FETCH, origin "Chennai", destinations ["Madurai"], replace_active true.
+- "compare this with Coimbatore" -> FETCH, destinations ["Coimbatore"], compare_with_active true, replace_active false.
+- "do the same for Madurai, Kodaikanal and Ooty" -> FETCH, destinations ["Madurai", "Kodaikanal", "Ooty"].
+- Carry forward earlier origin/dates/passengers/budget when not restated.
+
+REUSE examples:
+- "Which hotel is cheapest?" when the relevant MCP hotel results are already stored.
+- "What was the cheapest flight?" when the relevant MCP flight results are already stored.
+- For REUSE, set `question` to the user's actual question.
+
+ASK only when origin, destination, dates, or traveler count truly cannot be recovered from the full conversation or stored active context.
+
+ACTIVE TRIP CONTEXT:
+{{active_trip_summary(context)}}
+
+RECENT CONVERSATION:
+{{format_conversation(chat_history)}}
+'''
+
+          function = 'def build_router_prompt(context, chat_history):\n    return f"""' + prompt.replace('"""', '\\"\\"\\"') + '"""\n'
+          text = text[:start] + function + text[end:]
+
+          app.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit patched frontend
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add frontend/streamlit_app.py
+          if git diff --cached --quiet; then
+            echo "No frontend change required"
+          else
+            git commit -m "Fix semantic router output contract"
+            git push
+          fi
