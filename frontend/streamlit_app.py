@@ -92,8 +92,7 @@ def structured_router():
     # Groq supports strict structured output for openai/gpt-oss-20b.
     return model(max_tokens=600).with_structured_output(
         RouterDecision,
-        method="json_schema",
-        strict=True,
+        method="function_calling",
     )
 
 
