@@ -4,7 +4,7 @@ import os
 import re
 from contextlib import AsyncExitStack
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, List, Dict
 
 import nest_asyncio
 import streamlit as st
@@ -55,7 +55,6 @@ if "active_trip" not in st.session_state:
 if "stored_trips" not in st.session_state:
     st.session_state.stored_trips = {}
 
-# Fast aliases only. Unknown destinations are resolved by the same Groq model.
 IATA = {
     "chennai":"MAA", "madras":"MAA", "madurai":"IXM", "coimbatore":"CJB",
     "colombo":"CMB", "bangalore":"BLR", "bengaluru":"BLR", "hyderabad":"HYD",
@@ -102,12 +101,18 @@ DATE RULES
 - Dates must be YYYY-MM-DD internally.
 - Reject past dates.
 - Return date must be after departure date.
-"""
 
+MULTI-LEG (MULTI-HOP) RULES
+- When the user asks for a trip with multiple stops (e.g., "Chennai → Madurai → Coimbatore"), return an action "MULTI_LEG" with a list of legs.
+- Each leg is a dict with: origin, destination, departDate, returnDate, passengers, budgetLevel.
+- The origin of the first leg is the overall starting point; the destination of the last leg is the final stop.
+- For intermediate legs, the destination of leg i becomes the origin of leg i+1.
+- Dates must be consecutive: the returnDate of leg i should be the same as or before the departDate of leg i+1 (if a same-day connection is desired, allow them to be equal).
+- If the user gives a total duration but not per-leg dates, you may distribute the nights evenly, but prefer to ask for clarification if ambiguous.
+"""
 
 def model():
     return ChatGroq(model="openai/gpt-oss-20b", temperature=0, max_tokens=180)
-
 
 def iso(value: Any):
     try:
@@ -115,18 +120,15 @@ def iso(value: Any):
     except Exception:
         return None
 
-
 def money(value: Any, currency="USD"):
     try:
         return f"{currency} {float(value):,.2f}"
     except Exception:
         return "Unavailable"
 
-
 def service_list(services, key):
     value = services.get(key)
     return value if isinstance(value, list) else []
-
 
 def parse_dates(text):
     names = "January|February|March|April|May|June|July|August|September|October|November|December"
@@ -141,11 +143,9 @@ def parse_dates(text):
         return out
     return re.findall(r"\b20\d{2}-\d{2}-\d{2}\b", text)[:2]
 
-
 def parse_nights(text):
     m = re.search(r"\b(\d+)\s*[- ]?night(?:s)?\b", text, re.I)
     return int(m.group(1)) if m else None
-
 
 def split_destinations(text):
     text = re.sub(r"\s+(?:please|thanks)\s*$", "", text.strip(" .?"), flags=re.I)
@@ -158,7 +158,6 @@ def split_destinations(text):
             out.append(part.title())
     return out
 
-
 def extract_same_targets(text):
     patterns = [
         r"\bdo\s+the\s+same(?:\s+(?:trip|plan|planning|itinerary|thing))?\s+(?:with|for|in|to)\s+(.+)$",
@@ -170,7 +169,6 @@ def extract_same_targets(text):
         if m:
             return split_destinations(m.group(1).rstrip("?"))
     return []
-
 
 def local_route(message, context):
     text = message.strip().lower()
@@ -229,7 +227,6 @@ def local_route(message, context):
         return {"action":"PLAN", **base}
     return None
 
-
 async def resolve_airports(cities):
     known = {city.lower(): IATA[city.lower()] for city in cities if city.lower() in IATA}
     unknown = [city for city in cities if city.lower() not in known]
@@ -248,18 +245,16 @@ async def resolve_airports(cities):
         pass
     return known
 
-
 async def route_with_fallback(message, context):
     route = local_route(message, context)
     if route:
         return route
-    prompt = f"""{SYSTEM_REFERENCE}\n\nReturn JSON only. Allowed actions: PLAN, UPDATE, COMPARE, BATCH_UPDATE, REUSE, ASK.\nCurrent context:\n{json.dumps((context or {}).get('request', {}), ensure_ascii=False)}\nUser message:\n{message}\n\nRules:\n- 'do the same for A, B and C' => BATCH_UPDATE with exactly A, B, C.\n- Preserve earlier origin/dates/travelers/budget on follow-ups.\n- Never invent dates.\n- Always use uppercase 3-letter IATA codes in airport fields.\n\nReturn: {{\"action\":\"...\",\"origin\":null,\"destinationCity\":null,\"destinationAirport\":null,\"destinations\":[],\"departDate\":null,\"returnDate\":null,\"passengers\":null,\"budgetLevel\":null}}"""
+    prompt = f"""{SYSTEM_REFERENCE}\n\nReturn JSON only. Allowed actions: PLAN, UPDATE, COMPARE, BATCH_UPDATE, REUSE, ASK, MULTI_LEG.\nCurrent context:\n{json.dumps((context or {}).get('request', {}), ensure_ascii=False)}\nUser message:\n{message}\n\nRules:\n- 'do the same for A, B and C' => BATCH_UPDATE with exactly A, B, C.\n- Preserve earlier origin/dates/travelers/budget on follow-ups.\n- Never invent dates.\n- Always use uppercase 3-letter IATA codes in airport fields.\n- For multi-hop requests like "Chennai → Madurai → Coimbatore", return action "MULTI_LEG" with a "legs" list. Each leg has origin, destination, departDate, returnDate, passengers, budgetLevel.\n- Ensure dates are consecutive between legs.\n\nReturn: {{\"action\":\"...\",\"origin\":null,\"destinationCity\":null,\"destinationAirport\":null,\"destinations\":[],\"departDate\":null,\"returnDate\":null,\"passengers\":null,\"budgetLevel\":null,\"legs\":[]}}"""
     result = await model().ainvoke([HumanMessage(content=prompt)])
     m = re.search(r"\{.*\}", (result.content or ""), re.S)
     if not m:
         raise ValueError("Fast router returned invalid JSON")
     return json.loads(m.group(0))
-
 
 def normalize(req, base=None):
     data = dict(base or {})
@@ -277,7 +272,6 @@ def normalize(req, base=None):
     data["placesRadius"] = int(data.get("placesRadius") or 5000)
     return data
 
-
 def validate_request(req):
     start, end = iso(req.get("departDate")), iso(req.get("returnDate"))
     if not req.get("origin") or not req.get("destinationCity"):
@@ -294,11 +288,9 @@ def validate_request(req):
         return False, f"You specified {requested} night(s), but {req['departDate']} → {req['returnDate']} contains {actual} night(s). Please correct the dates or the night count."
     return True, ""
 
-
 async def get_trip(session, args):
     result = await asyncio.wait_for(session.call_tool("build_trip_data", arguments=args), timeout=18)
     return json.loads(result.content[0].text)
-
 
 def clean_attractions(items):
     tamil = "நகரம்|சாலை|தெரு|சந்து|குறுக்குச்சாலை|மாவட்டம்|மாநகராட்சி"
@@ -319,7 +311,6 @@ def clean_attractions(items):
         seen.add(key); out.append(item)
     return out
 
-
 def clean_restaurants(items):
     deny = re.compile(r"\b(street|road|lane|mawatha|marg|salai|theru|sandhu|highway|junction|bus\s*stop|station|nagar|colony)\b", re.I)
     out, seen = [], set()
@@ -333,7 +324,6 @@ def clean_restaurants(items):
         if not any(c.startswith("catering.") for c in categories): continue
         seen.add(key); out.append(item)
     return out
-
 
 def render_trip(trip, title_prefix=""):
     req, services, live = trip.get("request", {}), trip.get("services", {}), trip.get("liveDataSummary", {})
@@ -430,6 +420,119 @@ def render_trip(trip, title_prefix=""):
     lines += ["## ⚠️ Notes", "", "- Live prices and availability can change before booking.", "- Generic budget estimates are not live booking totals.", "- Weather is shown only for dates covered by the live provider.", "- The itinerary uses only provider-returned attractions and restaurants."]
     return "\n".join(lines)
 
+def render_multi_trip(trip_data):
+    legs = trip_data.get("legs", [])
+    if not legs:
+        return "No trip data available."
+
+    overall_lines = ["## ✈️ Multi‑City Trip at a glance", ""]
+    first_req = legs[0].get("request", {})
+    last_req = legs[-1].get("request", {})
+    origin = first_req.get("origin", "—")
+    total_travelers = first_req.get("passengers", 1)
+    budget = first_req.get("budgetLevel", "budget")
+    overall_lines.append(f"**{origin} → {' → '.join([leg['request']['destinationCity'] for leg in legs])}**")
+    overall_lines.append(f"**{first_req.get('departDate','—')} → {last_req.get('returnDate','—')} · {total_travelers} traveler(s)**")
+    overall_lines.append(f"Budget: **{budget}**")
+    overall_lines.append("")
+
+    leg_dates = []
+    for leg in legs:
+        req = leg.get("request", {})
+        start = iso(req.get("departDate")); end = iso(req.get("returnDate"))
+        leg_dates.append((start, end))
+
+    overall_start = leg_dates[0][0]
+    overall_end = leg_dates[-1][1]
+    if not overall_start or not overall_end:
+        overall_lines.append("⚠️ Date information missing for some legs.")
+        return "\n".join(overall_lines)
+
+    leg_flights = {}
+    for i, leg in enumerate(legs):
+        flights = service_list(leg.get("services", {}), "flights")
+        if flights:
+            leg_flights[i] = {"outbound": flights[0], "return": flights[-1] if len(flights) > 1 else None}
+        else:
+            leg_flights[i] = {"outbound": None, "return": None}
+
+    overall_lines.append("## 🗓️ Combined Itinerary")
+    overall_lines.append("")
+
+    current_date = overall_start
+    day_counter = 1
+    while current_date <= overall_end:
+        overall_lines.append(f"### Day {day_counter} · {current_date.isoformat()}")
+
+        leg_idx = None
+        for i, (start, end) in enumerate(leg_dates):
+            if start <= current_date <= end:
+                leg_idx = i
+                break
+        if leg_idx is None:
+            overall_lines.append("- ⚠️ Date not covered by any leg.")
+            current_date += timedelta(days=1); day_counter += 1
+            continue
+
+        leg = legs[leg_idx]
+        req = leg.get("request", {})
+        services = leg.get("services", {})
+        attractions = clean_attractions(services.get("attractions"))
+        restaurants = clean_restaurants(services.get("restaurants"))
+        is_departure_day = current_date == leg_dates[leg_idx][0]
+        is_last_leg_return_day = (leg_idx == len(legs)-1) and (current_date == leg_dates[leg_idx][1])
+
+        if is_departure_day and leg_flights.get(leg_idx, {}).get("outbound"):
+            flight = leg_flights[leg_idx]["outbound"]
+            overall_lines.append(f"- ✈️ **Outbound flight:** {flight.get('airline','Unknown')} – {money(flight.get('price'), flight.get('currency','USD'))}")
+        if is_last_leg_return_day and leg_flights.get(leg_idx, {}).get("return"):
+            flight = leg_flights[leg_idx]["return"]
+            overall_lines.append(f"- ✈️ **Return flight:** {flight.get('airline','Unknown')} – {money(flight.get('price'), flight.get('currency','USD'))}")
+
+        if is_departure_day and leg_idx == 0:
+            overall_lines.append("- 🏨 Check‑in at your hotel in " + req.get("destinationCity", "") + " (if applicable)")
+        if is_last_leg_return_day:
+            overall_lines.append("- 🧳 Check‑out and departure from " + req.get("destinationCity", ""))
+
+        if attractions and not (is_departure_day and leg_idx == 0) and not is_last_leg_return_day:
+            for attr in attractions[:2]:
+                overall_lines.append(f"- **{attr.get('name')}**" + (f" — {attr.get('description')}" if attr.get('description') else ""))
+        elif not is_departure_day and not is_last_leg_return_day:
+            overall_lines.append("- Flexible day – no specific attraction scheduled.")
+
+        if restaurants:
+            overall_lines.append(f"- 🍽️ **Food:** {restaurants[0].get('name')} (example from {req.get('destinationCity','')})")
+        else:
+            overall_lines.append("- 🍽️ No restaurant recommendations available.")
+
+        overall_lines.append("")
+        current_date += timedelta(days=1); day_counter += 1
+
+    overall_lines.append("## 📍 Leg‑by‑Leg Details")
+    for i, leg in enumerate(legs):
+        req = leg.get("request", {})
+        overall_lines.append(f"### Leg {i+1}: {req.get('origin','?')} → {req.get('destinationCity','?')}")
+        overall_lines.append(f"Dates: {req.get('departDate','—')} → {req.get('returnDate','—')}")
+        overall_lines.append(f"Budget: {req.get('budgetLevel','budget')}")
+        flights = service_list(leg.get("services",{}), "flights")
+        if flights:
+            numeric = [x for x in flights if isinstance(x.get('price'),(int,float))]
+            if numeric:
+                cheapest = min(numeric, key=lambda x: x['price'])
+                overall_lines.append(f"- Cheapest flight: {money(cheapest.get('price'), cheapest.get('currency','USD'))}")
+        hotels = service_list(leg.get("services",{}), "hotels")
+        if hotels:
+            numeric_h = [x for x in hotels if isinstance(x.get('price'),(int,float))]
+            if numeric_h:
+                cheapest_h = min(numeric_h, key=lambda x: x['price'])
+                overall_lines.append(f"- Cheapest hotel/night: {money(cheapest_h.get('price'), cheapest_h.get('currency','USD'))}")
+        overall_lines.append("")
+
+    overall_lines.append("## ⚠️ Notes")
+    overall_lines.append("- Live prices and availability can change before booking.")
+    overall_lines.append("- Intermediate legs' return flights are not shown; only outbound flights for each leg and the final return flight are used.")
+    overall_lines.append("- The combined itinerary is a suggestion based on live data from each stop.")
+    return "\n".join(overall_lines)
 
 async def fetch_many(requests, status):
     async with AsyncExitStack() as stack:
@@ -454,10 +557,26 @@ async def fetch_many(requests, status):
             status.info(f"⚡ Live data received: {result[0]}")
         return results
 
-
 async def build_requests(route, context):
     base = dict((context or {}).get("request", {}))
     action = str(route.get("action","ASK")).upper()
+
+    if action == "MULTI_LEG":
+        legs = route.get("legs", [])
+        if not legs:
+            raise ValueError("MULTI_LEG action requires a 'legs' list.")
+        normalized_legs = []
+        for leg in legs:
+            req = normalize(leg, base)
+            if not req.get("origin"):
+                req["origin"] = base.get("origin", "")
+            if not req.get("destinationCity"):
+                req["destinationCity"] = leg.get("destination", "")
+            if not req.get("destinationAirport") and req.get("destinationCity"):
+                airports = await resolve_airports([req["destinationCity"]])
+                req["destinationAirport"] = airports.get(req["destinationCity"].lower(), "")
+            normalized_legs.append(req)
+        return normalized_legs, action
 
     if action == "BATCH_UPDATE":
         cities = [str(x).strip().title() for x in route.get("destinations",[]) if str(x).strip()]
@@ -485,7 +604,6 @@ async def build_requests(route, context):
         req["destinationAirport"] = airports.get(req["destinationCity"].lower(),"")
     return [req], action
 
-
 async def run_turn(message, placeholder):
     try:
         placeholder.info("⚡ Fast mode…")
@@ -496,6 +614,8 @@ async def run_turn(message, placeholder):
         if action == "REUSE":
             if not context:
                 placeholder.empty(); return "## 🧭 No active trip\n\nStart with a complete trip request first."
+            if isinstance(context, dict) and context.get("type") == "multi":
+                placeholder.empty(); return render_multi_trip(context)
             services = context.get("services",{})
             low = message.lower()
             if "cheapest hotel" in low:
@@ -517,6 +637,7 @@ async def run_turn(message, placeholder):
             placeholder.empty(); return "## 🧭 No active trip\n\nStart with a trip first, then ask me to compare another destination."
 
         requests, effective_action = await build_requests(route, context)
+
         valid_requests = []
         errors = []
         for req in requests:
@@ -533,39 +654,46 @@ async def run_turn(message, placeholder):
         results = await fetch_many(valid_requests, placeholder)
 
         rendered, successful = [], []
-        for city, trip, error in results:
+        result_map = {city.lower(): (trip, error) for city, trip, error in results}
+        for req in valid_requests:
+            city = req["destinationCity"]
+            trip, error = result_map.get(city.lower(), (None, "No result returned."))
             if error:
                 rendered.append(f"## ❌ {city}\n\nLive trip data failed: `{error}`")
                 continue
             successful.append(trip)
             st.session_state.stored_trips[city.lower()] = trip
-            if effective_action == "PLAN" and len(successful) == 1:
-                st.session_state.active_trip = trip
-            elif effective_action == "UPDATE" and len(successful) == 1:
-                st.session_state.active_trip = trip
-            rendered.append(render_trip(trip, title_prefix=city if len(valid_requests) > 1 else ""))
+
+        if effective_action == "MULTI_LEG" and successful:
+            multi_trip = {"type": "multi", "legs": successful}
+            st.session_state.active_trip = multi_trip
+            rendered.append(render_multi_trip(multi_trip))
+        elif effective_action in ("PLAN", "UPDATE") and len(successful) == 1:
+            st.session_state.active_trip = successful[0]
+            rendered.append(render_trip(successful[0]))
+        else:
+            for trip in successful:
+                rendered.append(render_trip(trip))
 
         if errors:
             rendered.insert(0, "## ⚠️ Some requests were not run\n\n" + "\n\n".join(errors))
 
-        # Batch/comparison requests do NOT overwrite the active trip context.
-        if effective_action == "BATCH_UPDATE" and context:
-            pass
-        elif effective_action == "COMPARE" and context:
-            pass
-
         if effective_action == "COMPARE" and context and successful:
             candidate = successful[0]
-            a_services, c_services = context.get("services",{}), candidate.get("services",{})
+            if isinstance(context, dict) and context.get("type") == "multi":
+                active_trip = context["legs"][0]
+            else:
+                active_trip = context
+            a_services, c_services = active_trip.get("services",{}), candidate.get("services",{})
             af = min((float(x["price"]) for x in service_list(a_services,"flights") if isinstance(x.get("price"),(int,float))), default=None)
             cf = min((float(x["price"]) for x in service_list(c_services,"flights") if isinstance(x.get("price"),(int,float))), default=None)
             ah = min((float(x["price"]) for x in service_list(a_services,"hotels") if isinstance(x.get("price"),(int,float))), default=None)
             ch = min((float(x["price"]) for x in service_list(c_services,"hotels") if isinstance(x.get("price"),(int,float))), default=None)
-            nights_a = int(context.get("request",{}).get("durationNights") or 0)
+            nights_a = int(active_trip.get("request",{}).get("durationNights") or 0)
             nights_c = int(candidate.get("request",{}).get("durationNights") or 0)
             sub_a = af + ah*nights_a if af is not None and ah is not None else None
             sub_c = cf + ch*nights_c if cf is not None and ch is not None else None
-            active_name = context.get("request",{}).get("destinationCity","Active trip")
+            active_name = active_trip.get("request",{}).get("destinationCity","Active trip")
             candidate_name = candidate.get("request",{}).get("destinationCity","Candidate")
             rendered.append("## 🔎 Comparison summary\n\n| Metric | Active trip | Candidate |\n|---|---:|---:|\n" + f"| Cheapest flight | {money(af) if af is not None else '—'} | {money(cf) if cf is not None else '—'} |\n| Cheapest hotel/night | {money(ah) if ah is not None else '—'} | {money(ch) if ch is not None else '—'} |\n| Live flight + hotel subtotal | {money(sub_a) if sub_a is not None else '—'} | {money(sub_c) if sub_c is not None else '—'} |\n\n**Destinations:** {active_name} vs {candidate_name}. Your active trip context remains unchanged.")
 
@@ -575,12 +703,11 @@ async def run_turn(message, placeholder):
         placeholder.empty()
         return f"## ❌ Something went wrong\n\n`{type(exc).__name__}: {exc}`"
 
-
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-if prompt := st.chat_input("Try: Chennai → Madurai, Aug 20–25, 1 traveler"):
+if prompt := st.chat_input("Try: Chennai → Madurai → Coimbatore, Aug 20–28, 2 travelers"):
     st.session_state.messages.append({"role":"user","content":prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
