@@ -44,28 +44,6 @@ div[data-testid="stChatMessage"]{border:1px solid var(--border);border-radius:18
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("""
-<div class="hero">
-<span class="pill">● LIVE MCP · SEMANTIC ROUTING</span>
-<h1>✈️ Neuronworks Travel Agent</h1>
-<p>Flights · Hotels · Places · Restaurants · Weather · Budget · Currency</p>
-</div>
-""", unsafe_allow_html=True)
-
-
-with input_col:
-    user_input = st.text_area(
-        "Where do you want to go?",
-        placeholder="e.g., Plan a 3-day trip from Chennai to Goa...",
-        height=68,
-        key="chat_input_area",
-        label_visibility="collapsed",
-    )
-
-with btn_col:
-    send_clicked = st.button("Send ➤", use_container_width=True)
-
-
 
 st.markdown("""
 <div class="hero">
