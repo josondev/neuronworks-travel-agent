@@ -37,11 +37,6 @@ st.markdown("""
 # 1. Apply Async Patch for Streamlit
 nest_asyncio.apply()
 
-# 2. Page Config & UI
-st.set_page_config(page_title="AI Travel Agent", page_icon="✈️", layout="wide")
-st.title("✈️ AI Travel Agent")
-st.caption("Powered by Neuronworks.ai & MCP")
-
 # 3. Sidebar Configuration
 with st.sidebar:
     st.header("Configuration")
