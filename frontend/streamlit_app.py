@@ -3,6 +3,8 @@ import asyncio
 import os
 import json
 import nest_asyncio
+import ast
+import urllib.request
 from contextlib import AsyncExitStack
 from pydantic import create_model, Field
 from datetime import datetime
@@ -17,7 +19,14 @@ from langchain_core.tools import StructuredTool
 nest_asyncio.apply()
 
 # =============================================================================
-# UI & STYLING
+# TIMEOUTS
+# =============================================================================
+MCP_CONNECT_TIMEOUT = 60
+MCP_TOOL_TIMEOUT = 45
+LLM_INVOKE_TIMEOUT = 90
+
+# =============================================================================
+# UI & STYLING (UNCHANGED)
 # =============================================================================
 st.set_page_config(page_title="Neuronworks Travel Agent", page_icon="✈️", layout="wide")
 
@@ -44,7 +53,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =============================================================================
-# SIDEBAR CONFIG
+# SIDEBAR CONFIG (UNCHANGED)
 # =============================================================================
 with st.sidebar:
     st.header("⚙️ Configuration")
@@ -66,8 +75,6 @@ with st.sidebar:
 # =============================================================================
 # HELPERS
 # =============================================================================
-
-# Store raw MCP schemas globally so we can normalize args against them
 _mcp_tool_schemas: dict = {}
 
 
@@ -88,51 +95,38 @@ def create_pydantic_model_from_schema(name, schema):
 
 
 def normalize_tool_args(tool_name: str, args: dict) -> dict:
-    """
-    Coerce LLM-generated arguments to match the MCP tool's expected JSON schema.
-    Fixes common mistakes:
-      - string "Goa" → ["Goa"] when schema expects array
-      - string "4" → 4 when schema expects integer/number
-      - string "true" → True when schema expects boolean
-    """
     schema = _mcp_tool_schemas.get(tool_name, {})
     properties = schema.get("properties", {})
     normalized = dict(args)
-
     for key, value in list(normalized.items()):
         if key not in properties:
             continue
         expected_type = properties[key].get("type", "")
-
-        # String → Array coercion
-        if expected_type == "array" and isinstance(value, str):
-            normalized[key] = [value]
-        elif expected_type == "array" and isinstance(value, list):
-            pass  # already correct
-
-        # String → Integer coercion
+        if expected_type == "array":
+            if isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                    if isinstance(parsed, list):
+                        normalized[key] = parsed; continue
+                except (json.JSONDecodeError, TypeError): pass
+                try:
+                    parsed = ast.literal_eval(value)
+                    if isinstance(parsed, list):
+                        normalized[key] = parsed; continue
+                except (ValueError, SyntaxError): pass
+                normalized[key] = [value]
         elif expected_type == "integer" and isinstance(value, str):
-            try:
-                normalized[key] = int(value)
-            except ValueError:
-                pass
-
-        # String → Number coercion
+            try: normalized[key] = int(value)
+            except ValueError: pass
         elif expected_type == "number" and isinstance(value, str):
-            try:
-                normalized[key] = float(value)
-            except ValueError:
-                pass
-
-        # String → Boolean coercion
+            try: normalized[key] = float(value)
+            except ValueError: pass
         elif expected_type == "boolean" and isinstance(value, str):
             normalized[key] = value.lower() in ("true", "1", "yes")
-
     return normalized
 
 
 def clean_tool_output(tool_name: str, raw_text: str) -> str:
-    """Aggressively filters garbage from place/attraction results."""
     tool_lower = tool_name.lower()
     if not any(kw in tool_lower for kw in ['place', 'attraction', 'search', 'poi', 'location']):
         return raw_text
@@ -144,15 +138,12 @@ def clean_tool_output(tool_name: str, raw_text: str) -> str:
         elif isinstance(data, dict):
             for key in ['results', 'places', 'data', 'items', 'attractions', 'locations', 'candidates']:
                 if key in data and isinstance(data[key], list):
-                    items, wrapper_key = data[key], key
-                    break
+                    items, wrapper_key = data[key], key; break
             if not items:
                 for k, v in data.items():
                     if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                        items, wrapper_key = v, k
-                        break
-        if not items:
-            return raw_text
+                        items, wrapper_key = v, k; break
+        if not items: return raw_text
 
         good_types = {
             'tourist_attraction', 'museum', 'art_gallery', 'park', 'national_park',
@@ -163,7 +154,7 @@ def clean_tool_output(tool_name: str, raw_text: str) -> str:
             'waterfall', 'mountain', 'hill', 'viewpoint', 'observatory', 'planetarium',
             'science_center', 'restaurant', 'cafe', 'bar', 'food', 'shopping_mall',
             'market', 'department_store', 'movie_theater', 'night_club', 'casino',
-            'lodging', 'hotel', 'resort_hotel', 'guest_house', 'hostel', 'stadium', 'arena',
+            'lodging', 'hotel', 'resort_hotel', 'guest_house', 'hostel', 'stadium', 'arena',"selai", 
         }
         bad_types = {
             'bus_station', 'bus_stop', 'train_station', 'subway_station', 'taxi_stand',
@@ -173,7 +164,7 @@ def clean_tool_output(tool_name: str, raw_text: str) -> str:
             'real_estate_agency', 'electrician', 'plumber', 'hardware_store',
             'grocery_or_supermarket', 'convenience_store', 'gym', 'spa', 'beauty_salon',
             'laundry', 'funeral_home', 'cemetery', 'veterinary_care', 'storage',
-            'local_government_office', 'city_hall', 'point_of_interest', 'establishment',
+            'local_government_office', 'city_hall', 'point_of_interest', 'establishment',"selai", 
         }
         deny_words = [
             'water works', 'waterworks', 'water tank', 'water supply', 'sewage', 'drainage',
@@ -190,7 +181,6 @@ def clean_tool_output(tool_name: str, raw_text: str) -> str:
             'prison', 'jail', 'military', 'cantonment', 'power station', 'substation',
             'telephone exchange', 'water board',
         ]
-
         cleaned = []
         for item in items:
             if isinstance(item, dict):
@@ -200,19 +190,14 @@ def clean_tool_output(tool_name: str, raw_text: str) -> str:
                     val = item.get(key)
                     if isinstance(val, list): types.update(str(t).lower() for t in val)
                     elif isinstance(val, str): types.add(val.lower())
-                if types & good_types:
-                    cleaned.append(item); continue
-                if types & bad_types:
-                    continue
-                if any(d in name for d in deny_words):
-                    continue
+                if types & good_types: cleaned.append(item); continue
+                if types & bad_types: continue
+                if any(d in name for d in deny_words): continue
                 addr = str(item.get('formatted_address', '') or item.get('address', '') or '').lower()
-                if any(d in addr for d in ['nagar', 'colony', 'layout', 'extension', 'township']):
-                    continue
+                if any(d in addr for d in ['nagar', 'colony', 'layout', 'extension', 'township']): continue
                 cleaned.append(item)
             else:
                 cleaned.append(item)
-
         if wrapper_key:
             data[wrapper_key] = cleaned
             return json.dumps(data)
@@ -230,8 +215,39 @@ def beautify_output(text: str) -> str:
     return text
 
 
+def synthesize_from_trip_data(trip_data: dict) -> str:
+    if not trip_data:
+        return "I gathered data but couldn't generate a summary. Please try again."
+    lines = ["## 📋 Trip Summary (auto-generated from tool data)\n"]
+    for tool_name, data in trip_data.items():
+        lines.append(f"### 🔧 {tool_name}")
+        if isinstance(data, dict):
+            if 'total_budget' in data:
+                lines.append(f"- **Total Budget Estimate:** {data.get('currency', 'USD')} {data['total_budget']}")
+                breakdown = data.get('breakdown', {})
+                for k, v in breakdown.items():
+                    lines.append(f"  - {k.replace('_', ' ').title()}: {data.get('currency', 'USD')} {v}")
+            else:
+                preview = json.dumps(data, separators=(',', ':'))[:500]
+                lines.append(f"```\n{preview}\n```")
+        elif isinstance(data, list):
+            for item in data[:3]:
+                if isinstance(item, dict):
+                    name = item.get('name', item.get('airline', 'Unknown'))
+                    price = item.get('price', '')
+                    if price:
+                        lines.append(f"- **{name}**: {item.get('currency', 'USD')} {price}")
+                    else:
+                        lines.append(f"- **{name}**")
+        else:
+            lines.append(f"```\n{str(data)[:500]}\n```")
+        lines.append("")
+    lines.append("\n⚠️ *Auto-generated because the model couldn't produce a response. Prices and availability are subject to change.*")
+    return "\n".join(lines)
+
+
 # =============================================================================
-# SYSTEM PROMPT
+# SYSTEM PROMPT (UNCHANGED)
 # =============================================================================
 current_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -305,7 +321,7 @@ You are an expert, factual AI Travel Agent. Your goal is to plan realistic, book
 
 
 # =============================================================================
-# STREAMING AGENT (Async Generator)
+# STREAMING AGENT (Async Generator) — FIXED
 # =============================================================================
 async def run_agent_streaming(
     chat_history: list,
@@ -314,22 +330,46 @@ async def run_agent_streaming(
 
     async with AsyncExitStack() as stack:
         try:
+            # --- Warm up Render cold start ---
+            yield {"type": "thinking", "message": "☀️ Waking up MCP server (may take 30-60s on first use)..."}
+            try:
+                warmup_url = server_url.replace("/sse", "/health") if "/sse" in server_url else server_url
+                req = urllib.request.Request(warmup_url, method="GET")
+                await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(None, urllib.request.urlopen, req),
+                    timeout=MCP_CONNECT_TIMEOUT
+                )
+            except Exception:
+                pass
+
             # --- Connect ---
             yield {"type": "thinking", "message": "🔌 Connecting to MCP server..."}
-            transport = await stack.enter_async_context(sse_client(server_url))
-            session = await stack.enter_async_context(ClientSession(transport[0], transport[1]))
-            if hasattr(session, "initialize"):
-                await session.initialize()
+            try:
+                transport = await asyncio.wait_for(
+                    stack.enter_async_context(sse_client(server_url)),
+                    timeout=MCP_CONNECT_TIMEOUT
+                )
+                session = await asyncio.wait_for(
+                    stack.enter_async_context(ClientSession(transport[0], transport[1])),
+                    timeout=MCP_CONNECT_TIMEOUT
+                )
+                if hasattr(session, "initialize"):
+                    await asyncio.wait_for(session.initialize(), timeout=MCP_CONNECT_TIMEOUT)
+            except asyncio.TimeoutError:
+                yield {"type": "error", "message": f"❌ MCP server connection timed out after {MCP_CONNECT_TIMEOUT}s. Try again in a moment."}
+                return
 
             # --- Discover Tools ---
             yield {"type": "thinking", "message": "🔍 Discovering tools..."}
-            mcp_tools = await session.list_tools()
+            try:
+                mcp_tools = await asyncio.wait_for(session.list_tools(), timeout=MCP_CONNECT_TIMEOUT)
+            except asyncio.TimeoutError:
+                yield {"type": "error", "message": "❌ Timed out discovering tools."}
+                return
+
             langchain_tools = []
-
             for tool in mcp_tools.tools:
-                # Store raw schema for argument normalization
                 _mcp_tool_schemas[tool.name] = tool.input_schema or {}
-
                 input_model = create_pydantic_model_from_schema(tool.name, tool.input_schema)
                 tool_desc = (tool.description or "")[:150]
                 lc_tool = StructuredTool.from_function(
@@ -338,11 +378,18 @@ async def run_agent_streaming(
                 )
                 langchain_tools.append(lc_tool)
 
+            if not langchain_tools:
+                yield {"type": "error", "message": "❌ No tools discovered from MCP server."}
+                return
+
             # --- Build Messages ---
             llm = ChatOpenAI(
                 model="meta-llama/llama-3.3-70b-instruct",
                 api_key=api_key, base_url="https://openrouter.ai/api/v1",
-                default_headers={"X-Title": "AI Travel Agent"}, temperature=0
+                default_headers={"X-Title": "AI Travel Agent"},
+                temperature=0,
+                request_timeout=LLM_INVOKE_TIMEOUT,
+                max_retries=2,
             )
             llm_with_tools = llm.bind_tools(langchain_tools)
 
@@ -363,30 +410,36 @@ async def run_agent_streaming(
 
             # --- Agent Loop ---
             max_iterations = 5
-            # Track how many times each tool has been called to prevent infinite retries
             tool_call_counts: dict = {}
             MAX_CALLS_PER_TOOL = 2
+            had_tool_calls = False
 
             for iteration in range(max_iterations):
                 yield {"type": "thinking", "message": f"🤔 Reasoning... (step {iteration + 1})"}
 
-                ai_msg = await llm_with_tools.ainvoke(messages)
+                try:
+                    ai_msg = await asyncio.wait_for(
+                        llm_with_tools.ainvoke(messages),
+                        timeout=LLM_INVOKE_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    yield {"type": "error", "message": f"❌ LLM timed out after {LLM_INVOKE_TIMEOUT}s."}
+                    return
+                except Exception as e:
+                    yield {"type": "error", "message": f"❌ LLM error: {str(e)}"}
+                    return
+
                 messages.append(ai_msg)
 
-                # ---------------------------------------------------------
-                # FIX: OpenRouter sometimes returns tool calls as JSON
-                # string inside content instead of tool_calls array
-                # ---------------------------------------------------------
+                # --- OpenRouter tool-call-in-content fix ---
                 tool_calls_to_execute = list(ai_msg.tool_calls or [])
-
                 if not tool_calls_to_execute and ai_msg.content:
-                    content_stripped = ai_msg.content.strip()
-                    if (content_stripped.startswith("[") and '"type": "function"' in content_stripped) or \
-                       (content_stripped.startswith("{") and '"type": "function"' in content_stripped):
+                    cs = ai_msg.content.strip()
+                    if (cs.startswith("[") and '"type": "function"' in cs) or \
+                       (cs.startswith("{") and '"type": "function"' in cs):
                         try:
-                            parsed = json.loads(content_stripped)
-                            if isinstance(parsed, dict):
-                                parsed = [parsed]
+                            parsed = json.loads(cs)
+                            if isinstance(parsed, dict): parsed = [parsed]
                             for tc in parsed:
                                 if tc.get("type") == "function":
                                     fn = tc.get("function", {})
@@ -402,29 +455,27 @@ async def run_agent_streaming(
                 if not tool_calls_to_execute:
                     break
 
-                # Execute each tool call
+                had_tool_calls = True
+                tool_errors = []
+
                 for tool_call in tool_calls_to_execute:
                     tool_name = tool_call['name']
-
-                    # --- Per-tool retry cap ---
                     tool_call_counts[tool_name] = tool_call_counts.get(tool_name, 0) + 1
+
                     if tool_call_counts[tool_name] > MAX_CALLS_PER_TOOL:
-                        skip_msg = f"Skipped {tool_name}: already called {MAX_CALLS_PER_TOOL} times this turn. Moving on."
+                        skip_msg = f"Skipped {tool_name}: already called {MAX_CALLS_PER_TOOL} times."
                         yield {"type": "tool_end", "name": tool_name, "success": False, "preview": skip_msg}
-                        messages.append(ToolMessage(
-                            tool_call_id=tool_call['id'],
-                            content=skip_msg, name=tool_name
-                        ))
+                        messages.append(ToolMessage(tool_call_id=tool_call['id'], content=skip_msg, name=tool_name))
                         continue
 
-                    # --- Normalize arguments against MCP schema ---
-                    raw_args = tool_call['args']
-                    normalized_args = normalize_tool_args(tool_name, raw_args)
-
+                    normalized_args = normalize_tool_args(tool_name, tool_call['args'])
                     yield {"type": "tool_start", "name": tool_name, "args": normalized_args}
 
                     try:
-                        result = await session.call_tool(tool_name, arguments=normalized_args)
+                        result = await asyncio.wait_for(
+                            session.call_tool(tool_name, arguments=normalized_args),
+                            timeout=MCP_TOOL_TIMEOUT
+                        )
                         content_text = (
                             result.content[0].text
                             if result.content and hasattr(result.content[0], 'text')
@@ -432,48 +483,103 @@ async def run_agent_streaming(
                         )
                         content_text = clean_tool_output(tool_name, content_text)
 
+                        is_tool_error = False
+                        try:
+                            pr = json.loads(content_text)
+                            if isinstance(pr, dict):
+                                for sn, sd in pr.get("services", {}).items():
+                                    if isinstance(sd, dict) and "error" in sd:
+                                        is_tool_error = True
+                                        tool_errors.append(f"{sn}: {sd['error']}")
+                                if pr.get("error"):
+                                    is_tool_error = True
+                                    tool_errors.append(pr["error"])
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
                         try: trip_data[tool_name] = json.loads(content_text)
                         except: trip_data[tool_name] = content_text
 
-                        messages.append(ToolMessage(
-                            tool_call_id=tool_call['id'],
-                            content=content_text, name=tool_name
-                        ))
+                        messages.append(ToolMessage(tool_call_id=tool_call['id'], content=content_text, name=tool_name))
                         preview = content_text[:300] + "..." if len(content_text) > 300 else content_text
-                        yield {"type": "tool_end", "name": tool_name, "success": True, "preview": preview}
+                        yield {"type": "tool_end", "name": tool_name, "success": not is_tool_error, "preview": (f"⚠️ Partial: {preview}" if is_tool_error else preview)}
 
+                    except asyncio.TimeoutError:
+                        err = f"Tool {tool_name} timed out after {MCP_TOOL_TIMEOUT}s"
+                        tool_errors.append(err)
+                        messages.append(ToolMessage(tool_call_id=tool_call['id'], content=err, name=tool_name))
+                        yield {"type": "tool_end", "name": tool_name, "success": False, "preview": err}
                     except Exception as e:
                         err = f"Error: {str(e)}"
-                        messages.append(ToolMessage(
-                            tool_call_id=tool_call['id'], content=err, name=tool_name
-                        ))
+                        tool_errors.append(err)
+                        messages.append(ToolMessage(tool_call_id=tool_call['id'], content=err, name=tool_name))
                         yield {"type": "tool_end", "name": tool_name, "success": False, "preview": err}
 
-            # --- Stream Final Answer Token-by-Token ---
+                if tool_errors:
+                    messages.append(SystemMessage(
+                        content=f"Some tools had partial errors: {'; '.join(tool_errors)}. "
+                        "Use whatever data WAS returned. Do NOT say 'functions are insufficient'. "
+                        "Present available data and note which parts failed."
+                    ))
+
+            # =============================================================
+            # FINAL ANSWER — 3-tier fallback (THIS IS THE KEY FIX)
+            # =============================================================
             full_response = ""
-            async for chunk in llm_with_tools.astream(messages):
-                if chunk.content:
-                    stripped = chunk.content.strip()
-                    if stripped.startswith("[") and '"type": "function"' in stripped:
-                        continue
-                    if stripped.startswith("{") and '"type": "function"' in stripped:
-                        continue
-                    full_response += chunk.content
-                    yield {"type": "token", "content": chunk.content}
+
+            # Tier 1: Stream tokens
+            try:
+                async for chunk in llm_with_tools.astream(messages):
+                    if chunk.content:
+                        s = chunk.content.strip()
+                        if s.startswith("[") and '"type": "function"' in s: continue
+                        if s.startswith("{") and '"type": "function"' in s: continue
+                        full_response += chunk.content
+                        yield {"type": "token", "content": chunk.content}
+            except Exception:
+                pass
+
+            # Tier 2: ainvoke fallback if stream was empty
+            if not full_response.strip():
+                yield {"type": "thinking", "message": "📝 Generating summary..."}
+                try:
+                    fb = await asyncio.wait_for(llm_with_tools.ainvoke(messages), timeout=LLM_INVOKE_TIMEOUT)
+                    if fb.content and fb.content.strip():
+                        full_response = fb.content
+                        for ch in full_response:
+                            yield {"type": "token", "content": ch}
+                except Exception:
+                    pass
+
+            # Tier 3: Synthesize from tool data if LLM still empty
+            if not full_response.strip():
+                if had_tool_calls and trip_data:
+                    full_response = synthesize_from_trip_data(trip_data)
+                    for ch in full_response:
+                        yield {"type": "token", "content": ch}
+                else:
+                    yield {"type": "error", "message": "⚠️ Empty response. Try rephrasing."}
+                    return
 
             yield {"type": "done", "full_response": beautify_output(full_response)}
 
+        except asyncio.TimeoutError:
+            yield {"type": "error", "message": "❌ Operation timed out. Try again."}
         except Exception as e:
-            error_str = str(e)
-            if "413" in error_str or "rate_limit_exceeded" in error_str:
-                msg = "⚠️ Context limit exceeded. Clear chat memory to continue."
+            es = str(e)
+            if "413" in es or "rate_limit_exceeded" in es:
+                msg = "⚠️ Context limit exceeded. Clear chat memory."
+            elif "401" in es or "Unauthorized" in es:
+                msg = "❌ Invalid API key."
+            elif "429" in es:
+                msg = "⚠️ Rate limited. Wait and retry."
             else:
-                msg = f"❌ Error: {error_str}"
+                msg = f"❌ Error: {es}"
             yield {"type": "error", "message": msg}
 
 
 # =============================================================================
-# CHAT UI WITH STREAMING RENDERER
+# CHAT UI (UNCHANGED)
 # =============================================================================
 if "messages" not in st.session_state:
     st.session_state.messages = []
