@@ -182,7 +182,7 @@ def beautify_output(text: str) -> str:
 
 
 # =============================================================================
-# SYSTEM PROMPT (User's exact version)
+# SYSTEM PROMPT
 # =============================================================================
 current_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -320,12 +320,40 @@ async def run_agent_streaming(
                 ai_msg = await llm_with_tools.ainvoke(messages)
                 messages.append(ai_msg)
 
+                # ---------------------------------------------------------
+                # FIX: OpenRouter sometimes returns tool calls as a JSON
+                # string inside ai_msg.content instead of ai_msg.tool_calls.
+                # Detect and parse them so we never stream raw JSON to user.
+                # ---------------------------------------------------------
+                tool_calls_to_execute = list(ai_msg.tool_calls or [])
+
+                if not tool_calls_to_execute and ai_msg.content:
+                    content_stripped = ai_msg.content.strip()
+                    if (content_stripped.startswith("[") and '"type": "function"' in content_stripped) or \
+                       (content_stripped.startswith("{") and '"type": "function"' in content_stripped):
+                        try:
+                            parsed = json.loads(content_stripped)
+                            if isinstance(parsed, dict):
+                                parsed = [parsed]
+                            for tc in parsed:
+                                if tc.get("type") == "function":
+                                    fn = tc.get("function", {})
+                                    tool_calls_to_execute.append({
+                                        "id": tc.get("id", f"call_{iteration}_{len(tool_calls_to_execute)}"),
+                                        "name": fn.get("name", ""),
+                                        "args": json.loads(fn.get("arguments", "{}")) if isinstance(fn.get("arguments"), str) else fn.get("arguments", {}),
+                                    })
+                            # Replace raw-JSON AIMessage with clean one
+                            messages[-1] = AIMessage(content="", tool_calls=tool_calls_to_execute)
+                        except (json.JSONDecodeError, KeyError, TypeError):
+                            pass
+
                 # No tool calls → stream final answer
-                if not ai_msg.tool_calls:
+                if not tool_calls_to_execute:
                     break
 
                 # Execute each tool call with live status
-                for tool_call in ai_msg.tool_calls:
+                for tool_call in tool_calls_to_execute:
                     yield {"type": "tool_start", "name": tool_call['name'], "args": tool_call['args']}
 
                     try:
@@ -358,6 +386,12 @@ async def run_agent_streaming(
             full_response = ""
             async for chunk in llm_with_tools.astream(messages):
                 if chunk.content:
+                    # SAFETY: Skip any chunk that looks like raw tool JSON
+                    stripped = chunk.content.strip()
+                    if stripped.startswith("[") and '"type": "function"' in stripped:
+                        continue
+                    if stripped.startswith("{") and '"type": "function"' in stripped:
+                        continue
                     full_response += chunk.content
                     yield {"type": "token", "content": chunk.content}
 
@@ -396,7 +430,6 @@ if prompt := st.chat_input("Where do you want to go?"):
         response_placeholder = st.empty()
 
         async def consume_stream():
-            # Variables are LOCAL to this function — no nonlocal needed
             accumulated = ""
             active_status = None
 
