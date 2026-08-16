@@ -2,7 +2,7 @@ streamlit
 asyncio
 nest_asyncio
 langchain
-langchain-groq
+langchain-groq>=0.3.8
 langchain-core
 mcp==2.0.0
 pydantic
