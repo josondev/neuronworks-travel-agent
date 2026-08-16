@@ -3,8 +3,6 @@ import asyncio
 import os
 import json
 import nest_asyncio
-import ast
-import urllib.request
 from contextlib import AsyncExitStack
 from pydantic import create_model, Field
 from datetime import datetime
@@ -18,20 +16,11 @@ from langchain_core.tools import StructuredTool
 
 nest_asyncio.apply()
 
-
-
-# =============================================================================
-# TIMEOUT CONSTANTS — tuned for Render free-tier cold starts
-# =============================================================================
-MCP_CONNECT_TIMEOUT = 60
-MCP_TOOL_TIMEOUT = 45
-LLM_INVOKE_TIMEOUT = 90
-
 # =============================================================================
 # UI & STYLING
 # =============================================================================
+st.set_page_config(page_title="Neuronworks Travel Agent", page_icon="✈️", layout="wide")
 
-# 2. Page Config & UI
 st.markdown("""
 <style>
 :root{--bg:#080b14;--border:rgba(255,255,255,.10);--muted:#94a3b8}
@@ -41,9 +30,10 @@ st.markdown("""
 .hero h1{margin:0;color:#fff;font-size:2.2rem}.hero p{margin:8px 0;color:#cbd5e1}
 .pill{display:inline-block;padding:5px 11px;border-radius:999px;background:rgba(255,255,255,.09);color:#e2e8f0;font-size:.75rem;border:1px solid var(--border)}
 div[data-testid="stChatMessage"]{border:1px solid var(--border);border-radius:18px;padding:1rem 1.1rem;margin:.7rem 0;background:rgba(15,23,42,.82)}
+div[data-testid="stStatus"]{border:1px solid var(--border);border-radius:12px;margin:0.5rem 0;background:rgba(30,41,59,0.6)}
+div[data-testid="stStatus"] summary{padding:0.5rem 1rem;font-weight:500;color:#94a3b8}
 </style>
 """, unsafe_allow_html=True)
-
 
 st.markdown("""
 <div class="hero">
@@ -76,6 +66,8 @@ with st.sidebar:
 # =============================================================================
 # HELPERS
 # =============================================================================
+
+# Store raw MCP schemas globally so we can normalize args against them
 _mcp_tool_schemas: dict = {}
 
 
@@ -96,7 +88,13 @@ def create_pydantic_model_from_schema(name, schema):
 
 
 def normalize_tool_args(tool_name: str, args: dict) -> dict:
-    """Coerce LLM-generated arguments to match the MCP tool's expected JSON schema."""
+    """
+    Coerce LLM-generated arguments to match the MCP tool's expected JSON schema.
+    Fixes common mistakes:
+      - string "Goa" → ["Goa"] when schema expects array
+      - string "4" → 4 when schema expects integer/number
+      - string "true" → True when schema expects boolean
+    """
     schema = _mcp_tool_schemas.get(tool_name, {})
     properties = schema.get("properties", {})
     normalized = dict(args)
@@ -106,25 +104,27 @@ def normalize_tool_args(tool_name: str, args: dict) -> dict:
             continue
         expected_type = properties[key].get("type", "")
 
-        if expected_type == "array":
-            if isinstance(value, str):
-                try:
-                    parsed = json.loads(value)
-                    if isinstance(parsed, list):
-                        normalized[key] = parsed; continue
-                except (json.JSONDecodeError, TypeError): pass
-                try:
-                    parsed = ast.literal_eval(value)
-                    if isinstance(parsed, list):
-                        normalized[key] = parsed; continue
-                except (ValueError, SyntaxError): pass
-                normalized[key] = [value]
+        # String → Array coercion
+        if expected_type == "array" and isinstance(value, str):
+            normalized[key] = [value]
+        elif expected_type == "array" and isinstance(value, list):
+            pass  # already correct
+
+        # String → Integer coercion
         elif expected_type == "integer" and isinstance(value, str):
-            try: normalized[key] = int(value)
-            except ValueError: pass
+            try:
+                normalized[key] = int(value)
+            except ValueError:
+                pass
+
+        # String → Number coercion
         elif expected_type == "number" and isinstance(value, str):
-            try: normalized[key] = float(value)
-            except ValueError: pass
+            try:
+                normalized[key] = float(value)
+            except ValueError:
+                pass
+
+        # String → Boolean coercion
         elif expected_type == "boolean" and isinstance(value, str):
             normalized[key] = value.lower() in ("true", "1", "yes")
 
@@ -144,12 +144,15 @@ def clean_tool_output(tool_name: str, raw_text: str) -> str:
         elif isinstance(data, dict):
             for key in ['results', 'places', 'data', 'items', 'attractions', 'locations', 'candidates']:
                 if key in data and isinstance(data[key], list):
-                    items, wrapper_key = data[key], key; break
+                    items, wrapper_key = data[key], key
+                    break
             if not items:
                 for k, v in data.items():
                     if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                        items, wrapper_key = v, k; break
-        if not items: return raw_text
+                        items, wrapper_key = v, k
+                        break
+        if not items:
+            return raw_text
 
         good_types = {
             'tourist_attraction', 'museum', 'art_gallery', 'park', 'national_park',
@@ -170,7 +173,7 @@ def clean_tool_output(tool_name: str, raw_text: str) -> str:
             'real_estate_agency', 'electrician', 'plumber', 'hardware_store',
             'grocery_or_supermarket', 'convenience_store', 'gym', 'spa', 'beauty_salon',
             'laundry', 'funeral_home', 'cemetery', 'veterinary_care', 'storage',
-            'local_government_office', 'city_hall', 'point_of_interest', 'establishment', "selai",
+            'local_government_office', 'city_hall', 'point_of_interest', 'establishment',
         }
         deny_words = [
             'water works', 'waterworks', 'water tank', 'water supply', 'sewage', 'drainage',
@@ -185,7 +188,7 @@ def clean_tool_output(tool_name: str, raw_text: str) -> str:
             'bridge', 'dam', 'well', 'borewell', 'playground', 'maidan', 'road', 'street',
             'lane', 'highway', 'expressway', 'salai', 'theru', 'cemetery', 'graveyard',
             'prison', 'jail', 'military', 'cantonment', 'power station', 'substation',
-            'telephone exchange', 'water board', "selai",
+            'telephone exchange', 'water board',
         ]
 
         cleaned = []
@@ -197,11 +200,15 @@ def clean_tool_output(tool_name: str, raw_text: str) -> str:
                     val = item.get(key)
                     if isinstance(val, list): types.update(str(t).lower() for t in val)
                     elif isinstance(val, str): types.add(val.lower())
-                if types & good_types: cleaned.append(item); continue
-                if types & bad_types: continue
-                if any(d in name for d in deny_words): continue
+                if types & good_types:
+                    cleaned.append(item); continue
+                if types & bad_types:
+                    continue
+                if any(d in name for d in deny_words):
+                    continue
                 addr = str(item.get('formatted_address', '') or item.get('address', '') or '').lower()
-                if any(d in addr for d in ['nagar', 'colony', 'layout', 'extension', 'township']): continue
+                if any(d in addr for d in ['nagar', 'colony', 'layout', 'extension', 'township']):
+                    continue
                 cleaned.append(item)
             else:
                 cleaned.append(item)
@@ -221,41 +228,6 @@ def beautify_output(text: str) -> str:
     text = text.replace("### Budget:", "### 💰 Budget:")
     text = text.replace("### Disclaimer:", "### ⚠️ Disclaimer:")
     return text
-
-
-def synthesize_from_trip_data(trip_data: dict) -> str:
-    """When the LLM returns empty after tool calls, build a response from cached data."""
-    if not trip_data:
-        return "I gathered data but couldn't generate a summary. Please try again."
-
-    lines = ["## 📋 Trip Summary (auto-generated from tool data)\n"]
-
-    for tool_name, data in trip_data.items():
-        lines.append(f"### 🔧 {tool_name}")
-        if isinstance(data, dict):
-            if 'total_budget' in data:
-                lines.append(f"- **Total Budget Estimate:** {data.get('currency', 'USD')} {data['total_budget']}")
-                breakdown = data.get('breakdown', {})
-                for k, v in breakdown.items():
-                    lines.append(f"  - {k.replace('_', ' ').title()}: {data.get('currency', 'USD')} {v}")
-            else:
-                preview = json.dumps(data, separators=(',', ':'))[:500]
-                lines.append(f"```\n{preview}\n```")
-        elif isinstance(data, list):
-            for item in data[:3]:
-                if isinstance(item, dict):
-                    name = item.get('name', item.get('airline', 'Unknown'))
-                    price = item.get('price', '')
-                    if price:
-                        lines.append(f"- **{name}**: {item.get('currency', 'USD')} {price}")
-                    else:
-                        lines.append(f"- **{name}**")
-        else:
-            lines.append(f"```\n{str(data)[:500]}\n```")
-        lines.append("")
-
-    lines.append("\n⚠️ *This summary was auto-generated because the model couldn't produce a response. Prices and availability are subject to change.*")
-    return "\n".join(lines)
 
 
 # =============================================================================
@@ -310,7 +282,7 @@ You are an expert, factual AI Travel Agent. Your goal is to plan realistic, book
 #### 4. 💰 BUDGET (`calculate_trip_budget`)
 - **EXECUTION:** Call this tool **LAST**, only on the *first* full plan for a trip — not on every follow-up.
 - **⚠️ CRITICAL ARGUMENT FORMAT:**
-  - `destinations` MUST be a JSON **array** of strings, e.g. `["Goa"]` or `["Goa", "Pondicherry"]`. NEVER send a plain string like `"Goa"`. NEVER send a stringified list like `"['Goa']"`.
+  - `destinations` MUST be a JSON **array** of strings, e.g. `["Goa"]` or `["Goa", "Pondicherry"]`. NEVER send a plain string like `"Goa"`.
   - `duration` MUST be an **integer** (e.g. `4`), not a string `"4"`.
   - `travelers` MUST be an **integer** (e.g. `1`), not a string `"1"`.
 - **VALID `budgetLevel` VALUES:** the tool only accepts exactly `budget`, `mid-range`, or `luxury` (nothing else — e.g. NOT `"low"`, `"cheap"`). Map the user's wording: "cheap/low/minimum" -> `budget`, "moderate/comfortable" -> `mid-range`, "luxury/high-end" -> `luxury`. If you send an invalid value, the tool silently falls back to `mid-range` pricing, which will be wrong.
@@ -342,46 +314,22 @@ async def run_agent_streaming(
 
     async with AsyncExitStack() as stack:
         try:
-            # --- Warm up Render free-tier server (cold start recovery) ---
-            yield {"type": "thinking", "message": "☀️ Waking up MCP server (may take 30-60s on first use)..."}
-            try:
-                warmup_url = server_url.replace("/sse", "/health") if "/sse" in server_url else server_url
-                req = urllib.request.Request(warmup_url, method="GET")
-                await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(None, urllib.request.urlopen, req),
-                    timeout=MCP_CONNECT_TIMEOUT
-                )
-            except Exception:
-                pass  # Health endpoint may not exist — SSE connect will still work
-
-            # --- Connect with timeout ---
+            # --- Connect ---
             yield {"type": "thinking", "message": "🔌 Connecting to MCP server..."}
-            try:
-                transport = await asyncio.wait_for(
-                    stack.enter_async_context(sse_client(server_url)),
-                    timeout=MCP_CONNECT_TIMEOUT
-                )
-                session = await asyncio.wait_for(
-                    stack.enter_async_context(ClientSession(transport[0], transport[1])),
-                    timeout=MCP_CONNECT_TIMEOUT
-                )
-                if hasattr(session, "initialize"):
-                    await asyncio.wait_for(session.initialize(), timeout=MCP_CONNECT_TIMEOUT)
-            except asyncio.TimeoutError:
-                yield {"type": "error", "message": f"❌ MCP server connection timed out after {MCP_CONNECT_TIMEOUT}s. The Render free-tier server may need more time to wake up — try again in a moment."}
-                return
+            transport = await stack.enter_async_context(sse_client(server_url))
+            session = await stack.enter_async_context(ClientSession(transport[0], transport[1]))
+            if hasattr(session, "initialize"):
+                await session.initialize()
 
             # --- Discover Tools ---
             yield {"type": "thinking", "message": "🔍 Discovering tools..."}
-            try:
-                mcp_tools = await asyncio.wait_for(session.list_tools(), timeout=MCP_CONNECT_TIMEOUT)
-            except asyncio.TimeoutError:
-                yield {"type": "error", "message": "❌ Timed out discovering tools from MCP server."}
-                return
-
+            mcp_tools = await session.list_tools()
             langchain_tools = []
+
             for tool in mcp_tools.tools:
+                # Store raw schema for argument normalization
                 _mcp_tool_schemas[tool.name] = tool.input_schema or {}
+
                 input_model = create_pydantic_model_from_schema(tool.name, tool.input_schema)
                 tool_desc = (tool.description or "")[:150]
                 lc_tool = StructuredTool.from_function(
@@ -390,18 +338,11 @@ async def run_agent_streaming(
                 )
                 langchain_tools.append(lc_tool)
 
-            if not langchain_tools:
-                yield {"type": "error", "message": "❌ No tools discovered from MCP server."}
-                return
-
             # --- Build Messages ---
             llm = ChatOpenAI(
                 model="meta-llama/llama-3.3-70b-instruct",
                 api_key=api_key, base_url="https://openrouter.ai/api/v1",
-                default_headers={"X-Title": "AI Travel Agent"},
-                temperature=0,
-                request_timeout=LLM_INVOKE_TIMEOUT,
-                max_retries=2,
+                default_headers={"X-Title": "AI Travel Agent"}, temperature=0
             )
             llm_with_tools = llm.bind_tools(langchain_tools)
 
@@ -422,28 +363,20 @@ async def run_agent_streaming(
 
             # --- Agent Loop ---
             max_iterations = 5
+            # Track how many times each tool has been called to prevent infinite retries
             tool_call_counts: dict = {}
             MAX_CALLS_PER_TOOL = 2
-            had_tool_calls = False
 
             for iteration in range(max_iterations):
                 yield {"type": "thinking", "message": f"🤔 Reasoning... (step {iteration + 1})"}
 
-                try:
-                    ai_msg = await asyncio.wait_for(
-                        llm_with_tools.ainvoke(messages),
-                        timeout=LLM_INVOKE_TIMEOUT
-                    )
-                except asyncio.TimeoutError:
-                    yield {"type": "error", "message": f"❌ LLM response timed out after {LLM_INVOKE_TIMEOUT}s."}
-                    return
-                except Exception as e:
-                    yield {"type": "error", "message": f"❌ LLM error: {str(e)}"}
-                    return
-
+                ai_msg = await llm_with_tools.ainvoke(messages)
                 messages.append(ai_msg)
 
-                # --- Parse tool calls from content if needed (OpenRouter fix) ---
+                # ---------------------------------------------------------
+                # FIX: OpenRouter sometimes returns tool calls as JSON
+                # string inside content instead of tool_calls array
+                # ---------------------------------------------------------
                 tool_calls_to_execute = list(ai_msg.tool_calls or [])
 
                 if not tool_calls_to_execute and ai_msg.content:
@@ -452,7 +385,8 @@ async def run_agent_streaming(
                        (content_stripped.startswith("{") and '"type": "function"' in content_stripped):
                         try:
                             parsed = json.loads(content_stripped)
-                            if isinstance(parsed, dict): parsed = [parsed]
+                            if isinstance(parsed, dict):
+                                parsed = [parsed]
                             for tc in parsed:
                                 if tc.get("type") == "function":
                                     fn = tc.get("function", {})
@@ -468,56 +402,35 @@ async def run_agent_streaming(
                 if not tool_calls_to_execute:
                     break
 
-                had_tool_calls = True
-                tool_errors = []
-
-                # --- Execute each tool call ---
+                # Execute each tool call
                 for tool_call in tool_calls_to_execute:
                     tool_name = tool_call['name']
 
+                    # --- Per-tool retry cap ---
                     tool_call_counts[tool_name] = tool_call_counts.get(tool_name, 0) + 1
                     if tool_call_counts[tool_name] > MAX_CALLS_PER_TOOL:
-                        skip_msg = f"Skipped {tool_name}: already called {MAX_CALLS_PER_TOOL} times this turn."
+                        skip_msg = f"Skipped {tool_name}: already called {MAX_CALLS_PER_TOOL} times this turn. Moving on."
                         yield {"type": "tool_end", "name": tool_name, "success": False, "preview": skip_msg}
                         messages.append(ToolMessage(
-                            tool_call_id=tool_call['id'], content=skip_msg, name=tool_name
+                            tool_call_id=tool_call['id'],
+                            content=skip_msg, name=tool_name
                         ))
                         continue
 
+                    # --- Normalize arguments against MCP schema ---
                     raw_args = tool_call['args']
                     normalized_args = normalize_tool_args(tool_name, raw_args)
+
                     yield {"type": "tool_start", "name": tool_name, "args": normalized_args}
 
                     try:
-                        result = await asyncio.wait_for(
-                            session.call_tool(tool_name, arguments=normalized_args),
-                            timeout=MCP_TOOL_TIMEOUT
-                        )
+                        result = await session.call_tool(tool_name, arguments=normalized_args)
                         content_text = (
                             result.content[0].text
                             if result.content and hasattr(result.content[0], 'text')
                             else str(result)
                         )
                         content_text = clean_tool_output(tool_name, content_text)
-
-                        # Check if the tool itself returned an error in its response
-                        is_tool_error = False
-                        try:
-                            parsed_result = json.loads(content_text)
-                            if isinstance(parsed_result, dict):
-                                services = parsed_result.get("services", {})
-                                for svc_name, svc_data in services.items():
-                                    if isinstance(svc_data, dict) and "error" in svc_data:
-                                        is_tool_error = True
-                                        tool_errors.append(f"{svc_name}: {svc_data['error']}")
-                                if parsed_result.get("error"):
-                                    is_tool_error = True
-                                    tool_errors.append(parsed_result["error"])
-                                if parsed_result.get("planningBlocked"):
-                                    is_tool_error = True
-                                    tool_errors.append(parsed_result.get("error", "Planning blocked"))
-                        except (json.JSONDecodeError, TypeError):
-                            pass
 
                         try: trip_data[tool_name] = json.loads(content_text)
                         except: trip_data[tool_name] = content_text
@@ -526,139 +439,53 @@ async def run_agent_streaming(
                             tool_call_id=tool_call['id'],
                             content=content_text, name=tool_name
                         ))
-
                         preview = content_text[:300] + "..." if len(content_text) > 300 else content_text
-                        if is_tool_error:
-                            yield {"type": "tool_end", "name": tool_name, "success": False, "preview": f"⚠️ Partial: {preview}"}
-                        else:
-                            yield {"type": "tool_end", "name": tool_name, "success": True, "preview": preview}
-
-                    except asyncio.TimeoutError:
-                        err = f"Tool {tool_name} timed out after {MCP_TOOL_TIMEOUT}s"
-                        tool_errors.append(err)
-                        messages.append(ToolMessage(
-                            tool_call_id=tool_call['id'], content=err, name=tool_name
-                        ))
-                        yield {"type": "tool_end", "name": tool_name, "success": False, "preview": err}
+                        yield {"type": "tool_end", "name": tool_name, "success": True, "preview": preview}
 
                     except Exception as e:
                         err = f"Error: {str(e)}"
-                        tool_errors.append(err)
                         messages.append(ToolMessage(
                             tool_call_id=tool_call['id'], content=err, name=tool_name
                         ))
                         yield {"type": "tool_end", "name": tool_name, "success": False, "preview": err}
 
-                # If there were tool errors, tell the LLM to work with partial data
-                if tool_errors:
-                    error_summary = "; ".join(tool_errors)
-                    messages.append(SystemMessage(
-                        content=f"Some tools returned partial errors: {error_summary}. "
-                        "Use whatever data WAS successfully returned. Do NOT say 'functions are insufficient'. "
-                        "Present the available data and clearly note which parts failed."
-                    ))
-
-            # =============================================================
-            # FINAL ANSWER: 3-tier fallback
-            # =============================================================
+            # --- Stream Final Answer Token-by-Token ---
             full_response = ""
-
-            # Attempt 1: Stream tokens
-            try:
-                async for chunk in llm_with_tools.astream(messages):
-                    if chunk.content:
-                        stripped = chunk.content.strip()
-                        if stripped.startswith("[") and '"type": "function"' in stripped:
-                            continue
-                        if stripped.startswith("{") and '"type": "function"' in stripped:
-                            continue
-                        full_response += chunk.content
-                        yield {"type": "token", "content": chunk.content}
-            except Exception:
-                pass
-
-            # Attempt 2: If streaming yielded nothing, try ainvoke
-            if not full_response.strip():
-                yield {"type": "thinking", "message": "📝 Generating summary..."}
-                try:
-                    fallback_msg = await asyncio.wait_for(
-                        llm_with_tools.ainvoke(messages),
-                        timeout=LLM_INVOKE_TIMEOUT
-                    )
-                    if fallback_msg.content and fallback_msg.content.strip():
-                        full_response = fallback_msg.content
-                        for char in full_response:
-                            yield {"type": "token", "content": char}
-                except Exception:
-                    pass
-
-            # Attempt 3: If LLM still returned nothing, synthesize from tool data
-            if not full_response.strip():
-                if had_tool_calls and trip_data:
-                    full_response = synthesize_from_trip_data(trip_data)
-                    for char in full_response:
-                        yield {"type": "token", "content": char}
-                else:
-                    yield {"type": "error", "message": "⚠️ The model returned an empty response. Try rephrasing your query."}
-                    return
+            async for chunk in llm_with_tools.astream(messages):
+                if chunk.content:
+                    stripped = chunk.content.strip()
+                    if stripped.startswith("[") and '"type": "function"' in stripped:
+                        continue
+                    if stripped.startswith("{") and '"type": "function"' in stripped:
+                        continue
+                    full_response += chunk.content
+                    yield {"type": "token", "content": chunk.content}
 
             yield {"type": "done", "full_response": beautify_output(full_response)}
 
-        except asyncio.TimeoutError:
-            yield {"type": "error", "message": "❌ Operation timed out. Please try again."}
         except Exception as e:
             error_str = str(e)
             if "413" in error_str or "rate_limit_exceeded" in error_str:
                 msg = "⚠️ Context limit exceeded. Clear chat memory to continue."
-            elif "401" in error_str or "Unauthorized" in error_str:
-                msg = "❌ Invalid API key. Check your OPENROUTER_API_KEY."
-            elif "429" in error_str or "Too Many Requests" in error_str:
-                msg = "⚠️ Rate limited. Wait a moment and try again."
-            elif "Connection" in error_str or "connect" in error_str.lower():
-                msg = "❌ Network error. Check your internet connection and MCP server URL."
             else:
                 msg = f"❌ Error: {error_str}"
             yield {"type": "error", "message": msg}
 
 
 # =============================================================================
-# CHAT UI — using st.text_area + st.button instead of st.chat_input
+# CHAT UI WITH STREAMING RENDERER
 # =============================================================================
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "trip_data" not in st.session_state:
     st.session_state.trip_data = {}
 
-# Render history
 for message in st.session_state.messages:
     if message["role"] != "system":
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-# Input area: plain text_area + send button
-input_col, btn_col = st.columns([6, 1])
-
-with input_col:
-    user_input = st.text_area(
-        "Where do you want to go?",
-        placeholder="e.g., Plan a 3-day trip from Chennai to Goa...",
-        height=68,
-        key="chat_input_area",
-        label_visibility="collapsed",
-    )
-
-with btn_col:
-    st.write("")  # spacer to align button with textarea
-    send_clicked = st.button("Send ➤", use_container_width=True)
-
-# Process on send or Enter (Streamlit reruns on any widget interaction,
-# so we check if there's text and the button was clicked)
-if send_clicked and user_input and user_input.strip():
-    prompt = user_input.strip()
-
-    # Clear the text area for next input
-    st.session_state["chat_input_area"] = ""
-
+if prompt := st.chat_input("Where do you want to go?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -721,5 +548,3 @@ if send_clicked and user_input and user_input.strip():
                 "role": "assistant",
                 "content": final_response
             })
-
-    st.rerun()
