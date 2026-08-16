@@ -160,85 +160,44 @@ section[data-testid="stSidebar"] h3 {
     color: var(--text-primary) !important;
 }
 
-/* ===== CHAT INPUT — single clean layer, no double box ===== */
-div[data-testid="stChatInput"] {
-    background: var(--input-bg) !important;
-    border: 1.5px solid var(--input-border) !important;
-    border-radius: 16px !important;
-    padding: 0.35rem 0.5rem !important;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
-    box-shadow: none !important;
-}
-div[data-testid="stChatInput"]:focus-within {
-    border-color: var(--input-focus-border) !important;
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18) !important;
-}
-div[data-testid="stChatInput"] > div,
-div[data-testid="stChatInput"] > div > div,
-div[data-testid="stChatInput"] > div > div > div {
-    background: transparent !important;
-    background-color: transparent !important;
-    border: none !important;
-    border-width: 0 !important;
-    box-shadow: none !important;
-    outline: none !important;
-    padding: 0 !important;
-    margin: 0 !important;
-}
-div[data-testid="stChatInput"] textarea,
-div[data-testid="stChatInput"] textarea:focus,
-div[data-testid="stChatInput"] textarea:active,
-div[data-testid="stChatInput"] textarea:hover {
-    color: var(--text-primary) !important;
-    background: transparent !important;
-    background-color: transparent !important;
-    border: none !important;
-    border-width: 0 !important;
-    box-shadow: none !important;
-    outline: none !important;
-    font-size: 1rem !important;
-    line-height: 1.5 !important;
-    padding: 0.45rem 0.3rem !important;
-    resize: none !important;
-    min-height: 24px !important;
-}
-div[data-testid="stChatInput"] textarea::placeholder {
-    color: var(--input-placeholder) !important;
-    font-style: italic !important;
-    opacity: 1 !important;
-}
-div[data-testid="stChatInput"] button,
-div[data-testid="stChatInput"] button:focus,
-div[data-testid="stChatInput"] button:active {
-    background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
-    border: none !important;
-    border-radius: 12px !important;
-    color: white !important;
-    width: 36px !important;
-    height: 36px !important;
-    min-width: 36px !important;
-    padding: 0 !important;
-    box-shadow: none !important;
-    outline: none !important;
-    transition: opacity 0.2s ease !important;
-}
-div[data-testid="stChatInput"] button:hover { opacity: 0.85 !important; }
-div[data-testid="stChatInput"] button svg { fill: white !important; stroke: white !important; }
-
-/* ===== SIDEBAR INPUTS ===== */
-section[data-testid="stSidebar"] input,
-section[data-testid="stSidebar"] textarea {
-    color: var(--text-primary) !important;
-    background: var(--input-bg) !important;
-    border: 1px solid var(--input-border) !important;
-    border-radius: 10px !important;
-    padding: 0.5rem 0.75rem !important;
-}
-section[data-testid="stSidebar"] input:focus,
-section[data-testid="stSidebar"] textarea:focus {
-    border-color: var(--input-focus-border) !important;
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15) !important;
-    outline: none !important;
+/* ===== TEXT AREA INPUT (replaces st.chat_input) ===== */
+    div[data-testid="stTextInput"] > div > div > textarea,
+    textarea[data-testid="stTextArea"] {
+        color: var(--text-primary) !important;
+        background: var(--input-bg) !important;
+        border: 1.5px solid var(--input-border) !important;
+        border-radius: 14px !important;
+        padding: 0.6rem 0.8rem !important;
+        font-size: 1rem !important;
+        line-height: 1.5 !important;
+        resize: none !important;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+    }
+    textarea[data-testid="stTextArea"]:focus {
+        border-color: var(--input-focus-border) !important;
+        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18) !important;
+        outline: none !important;
+    }
+    textarea[data-testid="stTextArea"]::placeholder {
+        color: var(--input-placeholder) !important;
+        font-style: italic !important;
+    }
+    
+    /* Send button */
+    div[data-testid="stButton"] > button {
+        background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 14px !important;
+        padding: 0.6rem 1.2rem !important;
+        font-weight: 600 !important;
+        font-size: 0.95rem !important;
+        transition: opacity 0.2s ease !important;
+        height: 68px !important;
+    }
+    div[data-testid="stButton"] > button:hover {
+        opacity: 0.85 !important;
+    }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -368,7 +327,7 @@ def clean_tool_output(tool_name: str, raw_text: str) -> str:
             'real_estate_agency', 'electrician', 'plumber', 'hardware_store',
             'grocery_or_supermarket', 'convenience_store', 'gym', 'spa', 'beauty_salon',
             'laundry', 'funeral_home', 'cemetery', 'veterinary_care', 'storage',
-            'local_government_office', 'city_hall', 'point_of_interest', 'establishment',
+            'local_government_office', 'city_hall', 'point_of_interest', 'establishment',"selai", 
         }
         deny_words = [
             'water works', 'waterworks', 'water tank', 'water supply', 'sewage', 'drainage',
@@ -383,7 +342,7 @@ def clean_tool_output(tool_name: str, raw_text: str) -> str:
             'bridge', 'dam', 'well', 'borewell', 'playground', 'maidan', 'road', 'street',
             'lane', 'highway', 'expressway', 'salai', 'theru', 'cemetery', 'graveyard',
             'prison', 'jail', 'military', 'cantonment', 'power station', 'substation',
-            'telephone exchange', 'water board',
+            'telephone exchange', 'water board',"selai", 
         ]
 
         cleaned = []
@@ -820,19 +779,43 @@ async def run_agent_streaming(
 
 
 # =============================================================================
-# CHAT UI WITH STREAMING RENDERER
+# CHAT UI — using st.text_area + st.button instead of st.chat_input
 # =============================================================================
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "trip_data" not in st.session_state:
     st.session_state.trip_data = {}
 
+# Render history
 for message in st.session_state.messages:
     if message["role"] != "system":
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-if prompt := st.chat_input("Where do you want to go?"):
+# Input area: plain text_area + send button
+input_col, btn_col = st.columns([6, 1])
+
+with input_col:
+    user_input = st.text_area(
+        "Where do you want to go?",
+        placeholder="e.g., Plan a 3-day trip from Chennai to Goa...",
+        height=68,
+        key="chat_input_area",
+        label_visibility="collapsed",
+    )
+
+with btn_col:
+    st.write("")  # spacer to align button with textarea
+    send_clicked = st.button("Send ➤", use_container_width=True)
+
+# Process on send or Enter (Streamlit reruns on any widget interaction,
+# so we check if there's text and the button was clicked)
+if send_clicked and user_input and user_input.strip():
+    prompt = user_input.strip()
+
+    # Clear the text area for next input
+    st.session_state["chat_input_area"] = ""
+
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -895,3 +878,5 @@ if prompt := st.chat_input("Where do you want to go?"):
                 "role": "assistant",
                 "content": final_response
             })
+
+    st.rerun()
