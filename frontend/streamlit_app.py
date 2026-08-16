@@ -28,138 +28,59 @@ LLM_INVOKE_TIMEOUT = 90
 # =============================================================================
 # UI & STYLING
 # =============================================================================
-st.set_page_config(page_title="Neuronworks Travel Agent", page_icon="✈️", layout="wide")
 
 st.markdown("""
 <style>
-/* ===== DARK MODE (default) ===== */
-:root {
-    --bg: #080b14;
-    --bg-secondary: rgba(15, 23, 42, 0.82);
-    --border: rgba(255, 255, 255, 0.10);
-    --text-primary: #f1f5f9;
-    --text-secondary: #cbd5e1;
-    --text-muted: #94a3b8;
-    --hero-bg: linear-gradient(135deg, rgba(37, 99, 235, 0.28), rgba(124, 58, 237, 0.22));
-    --pill-bg: rgba(255, 255, 255, 0.09);
-    --pill-text: #e2e8f0;
-    --status-bg: rgba(30, 41, 59, 0.6);
-    --info-bg: rgba(37, 99, 235, 0.15);
-    --info-border: rgba(37, 99, 235, 0.4);
-    --info-text: #93c5fd;
-    --input-bg: rgba(15, 23, 42, 0.9);
-    --input-border: rgba(255, 255, 255, 0.15);
-    --input-focus-border: rgba(99, 102, 241, 0.6);
-    --input-placeholder: #64748b;
-}
+  /* App background */
+  .stApp {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  }
 
-/* ===== LIGHT MODE ===== */
-@media (prefers-color-scheme: light) {
-    :root {
-        --bg: #f8fafc;
-        --bg-secondary: rgba(255, 255, 255, 0.95);
-        --border: rgba(0, 0, 0, 0.12);
-        --text-primary: #0f172a;
-        --text-secondary: #334155;
-        --text-muted: #64748b;
-        --hero-bg: linear-gradient(135deg, rgba(37, 99, 235, 0.10), rgba(124, 58, 237, 0.08));
-        --pill-bg: rgba(0, 0, 0, 0.06);
-        --pill-text: #334155;
-        --status-bg: rgba(241, 245, 249, 0.95);
-        --info-bg: rgba(37, 99, 235, 0.08);
-        --info-border: rgba(37, 99, 235, 0.25);
-        --info-text: #1d4ed8;
-        --input-bg: rgba(255, 255, 255, 0.95);
-        --input-border: rgba(0, 0, 0, 0.15);
-        --input-focus-border: rgba(99, 102, 241, 0.6);
-        --input-placeholder: #94a3b8;
+  section.main > div {
+    max-width: 100%;
+    padding: 1rem;
+  }
+
+  /* Base chat message box styling (common) */
+  div[data-testid="stChatMessage"]{
+    border-radius: 10px;
+    padding: 1rem;
+    margin: 0.5rem 0;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.12);
+  }
+
+  /* DARK MODE */
+  @media (prefers-color-scheme: dark) {
+    div[data-testid="stChatMessage"]{
+      background: #0b0b0b !important;
     }
-}
 
-.stApp {
-    background: radial-gradient(circle at 10% 0%, rgba(37, 99, 235, 0.42), transparent 34%),
-                radial-gradient(circle at 90% 10%, rgba(124, 58, 237, 0.36), transparent 32%),
-                var(--bg);
-}
-@media (prefers-color-scheme: light) {
-    .stApp {
-        background: radial-gradient(circle at 10% 0%, rgba(37, 99, 235, 0.08), transparent 34%),
-                    radial-gradient(circle at 90% 10%, rgba(124, 58, 237, 0.06), transparent 32%),
-                    var(--bg);
+    /* Target the actual rendered text inside chat messages */
+    div[data-testid="stChatMessageContent"],
+    div[data-testid="stChatMessageContent"] p,
+    div[data-testid="stChatMessageContent"] li,
+    div[data-testid="stChatMessageContent"] span,
+    div[data-testid="stChatMessageContent"] div{
+      color: #f7fafc !important;
     }
-}
+  }
 
-.block-container { max-width: 1180px; padding-top: 5rem; padding-bottom: 6rem; }
+  /* LIGHT MODE */
+  @media (prefers-color-scheme: light) {
+    div[data-testid="stChatMessage"]{
+      background: #ffffff !important;
+    }
 
-.hero {
-    padding: 26px 28px; border-radius: 22px; margin-bottom: 18px;
-    background: var(--hero-bg); border: 1px solid var(--border);
-}
-.hero h1 { margin: 0; color: var(--text-primary); font-size: 2.2rem; }
-.hero p { margin: 8px 0; color: var(--text-secondary); }
-.pill {
-    display: inline-block; padding: 5px 11px; border-radius: 999px;
-    background: var(--pill-bg); color: var(--pill-text);
-    font-size: 0.75rem; border: 1px solid var(--border);
-}
-
-/* Chat messages */
-# CSS (inside the <style> block) — unchanged from the working fix:
-
-div[data-testid="stTextArea"] > label {
-    display: none !important;
-}
-textarea[data-testid="stTextArea"] {
-    color: var(--text-primary) !important;
-    background: var(--input-bg) !important;
-    border: 1.5px solid var(--input-border) !important;
-    border-radius: 16px !important;
-    padding: 0.85rem 1rem !important;
-    font-size: 1rem !important;
-    line-height: 1.5 !important;
-    resize: none !important;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12) !important;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease !important;
-}
-textarea[data-testid="stTextArea"]:hover {
-    border-color: rgba(99, 102, 241, 0.35) !important;
-}
-textarea[data-testid="stTextArea"]:focus {
-    border-color: var(--input-focus-border) !important;
-    box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.16), 0 2px 14px rgba(0, 0, 0, 0.14) !important;
-    outline: none !important;
-}
-textarea[data-testid="stTextArea"]::placeholder {
-    color: var(--input-placeholder) !important;
-    font-style: italic !important;
-}
-
-div[data-testid="stButton"] > button {
-    background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
-    color: white !important;
-    border: none !important;
-    border-radius: 16px !important;
-    padding: 0.6rem 1.2rem !important;
-    font-weight: 600 !important;
-    font-size: 0.95rem !important;
-    height: 68px !important;
-    width: 100% !important;
-    box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35) !important;
-    transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease !important;
-}
-div[data-testid="stButton"] > button:hover {
-    transform: translateY(-1px) !important;
-    box-shadow: 0 6px 18px rgba(99, 102, 241, 0.45) !important;
-    opacity: 0.95 !important;
-}
-div[data-testid="stButton"] > button:active {
-    transform: translateY(0) !important;
-    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3) !important;
-}
-
+    div[data-testid="stChatMessageContent"],
+    div[data-testid="stChatMessageContent"] p,
+    div[data-testid="stChatMessageContent"] li,
+    div[data-testid="stChatMessageContent"] span,
+    div[data-testid="stChatMessageContent"] div{
+      color: #111827 !important;
+    }
+  }
 </style>
 """, unsafe_allow_html=True)
-
 # Layout (delete the spacer line):
 input_col, btn_col = st.columns([6, 1])
 
