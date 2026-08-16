@@ -19,7 +19,7 @@ from langchain_core.tools import StructuredTool
 nest_asyncio.apply()
 
 # =============================================================================
-# TIMEOUT CONSTANTS — tuned for Render free-tier cold starts
+# TIMEOUT CONSTANTS
 # =============================================================================
 MCP_CONNECT_TIMEOUT = 60
 MCP_TOOL_TIMEOUT = 45
@@ -160,44 +160,96 @@ section[data-testid="stSidebar"] h3 {
     color: var(--text-primary) !important;
 }
 
-/* ===== TEXT AREA INPUT (replaces st.chat_input) ===== */
-    div[data-testid="stTextInput"] > div > div > textarea,
-    textarea[data-testid="stTextArea"] {
-        color: var(--text-primary) !important;
-        background: var(--input-bg) !important;
-        border: 1.5px solid var(--input-border) !important;
-        border-radius: 14px !important;
-        padding: 0.6rem 0.8rem !important;
-        font-size: 1rem !important;
-        line-height: 1.5 !important;
-        resize: none !important;
-        transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
-    }
-    textarea[data-testid="stTextArea"]:focus {
-        border-color: var(--input-focus-border) !important;
-        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18) !important;
-        outline: none !important;
-    }
-    textarea[data-testid="stTextArea"]::placeholder {
-        color: var(--input-placeholder) !important;
-        font-style: italic !important;
-    }
-    
-    /* Send button */
-    div[data-testid="stButton"] > button {
-        background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 14px !important;
-        padding: 0.6rem 1.2rem !important;
-        font-weight: 600 !important;
-        font-size: 0.95rem !important;
-        transition: opacity 0.2s ease !important;
-        height: 68px !important;
-    }
-    div[data-testid="stButton"] > button:hover {
-        opacity: 0.85 !important;
-    }
+/* ===== COMPOSER BAR (text area + send button) ===== */
+div[data-testid="stTextArea"] {
+    display: flex;
+}
+textarea[data-testid="stTextArea"] {
+    color: var(--text-primary) !important;
+    background: var(--input-bg) !important;
+    border: 1.5px solid var(--input-border) !important;
+    border-radius: 16px !important;
+    padding: 0.85rem 1rem !important;
+    font-size: 1rem !important;
+    line-height: 1.5 !important;
+    resize: none !important;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12) !important;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease !important;
+}
+textarea[data-testid="stTextArea"]:hover {
+    border-color: rgba(99, 102, 241, 0.35) !important;
+}
+textarea[data-testid="stTextArea"]:focus {
+    border-color: var(--input-focus-border) !important;
+    box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.16), 0 2px 14px rgba(0, 0, 0, 0.14) !important;
+    outline: none !important;
+}
+textarea[data-testid="stTextArea"]::placeholder {
+    color: var(--input-placeholder) !important;
+    font-style: italic !important;
+}
+
+/* Send button */
+div[data-testid="stButton"] > button {
+    background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 16px !important;
+    padding: 0.6rem 1.2rem !important;
+    font-weight: 600 !important;
+    font-size: 0.95rem !important;
+    height: 68px !important;
+    width: 100% !important;
+    box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35) !important;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease !important;
+}
+div[data-testid="stButton"] > button:hover {
+    transform: translateY(-1px) !important;
+    box-shadow: 0 6px 18px rgba(99, 102, 241, 0.45) !important;
+    opacity: 0.95 !important;
+}
+div[data-testid="stButton"] > button:active {
+    transform: translateY(0) !important;
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3) !important;
+}
+
+/* Sidebar inputs — scoped so they don't conflict with composer */
+section[data-testid="stSidebar"] input,
+section[data-testid="stSidebar"] textarea {
+    color: var(--text-primary) !important;
+    background: var(--input-bg) !important;
+    border: 1px solid var(--input-border) !important;
+    border-radius: 10px !important;
+    padding: 0.5rem 0.75rem !important;
+    height: auto !important;
+    box-shadow: none !important;
+}
+section[data-testid="stSidebar"] input:focus,
+section[data-testid="stSidebar"] textarea:focus {
+    border-color: var(--input-focus-border) !important;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15) !important;
+    outline: none !important;
+}
+
+/* Sidebar buttons — override the global send-button style */
+section[data-testid="stSidebar"] div[data-testid="stButton"] > button {
+    background: var(--bg-secondary) !important;
+    color: var(--text-primary) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 10px !important;
+    height: auto !important;
+    width: auto !important;
+    padding: 0.5rem 1rem !important;
+    font-size: 0.85rem !important;
+    font-weight: 500 !important;
+    box-shadow: none !important;
+    transform: none !important;
+}
+section[data-testid="stSidebar"] div[data-testid="stButton"] > button:hover {
+    transform: none !important;
+    box-shadow: none !important;
+    opacity: 0.8 !important;
+    border-color: var(--input-focus-border) !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -327,7 +379,7 @@ def clean_tool_output(tool_name: str, raw_text: str) -> str:
             'real_estate_agency', 'electrician', 'plumber', 'hardware_store',
             'grocery_or_supermarket', 'convenience_store', 'gym', 'spa', 'beauty_salon',
             'laundry', 'funeral_home', 'cemetery', 'veterinary_care', 'storage',
-            'local_government_office', 'city_hall', 'point_of_interest', 'establishment',"selai", 
+            'local_government_office', 'city_hall', 'point_of_interest', 'establishment',
         }
         deny_words = [
             'water works', 'waterworks', 'water tank', 'water supply', 'sewage', 'drainage',
@@ -342,7 +394,7 @@ def clean_tool_output(tool_name: str, raw_text: str) -> str:
             'bridge', 'dam', 'well', 'borewell', 'playground', 'maidan', 'road', 'street',
             'lane', 'highway', 'expressway', 'salai', 'theru', 'cemetery', 'graveyard',
             'prison', 'jail', 'military', 'cantonment', 'power station', 'substation',
-            'telephone exchange', 'water board',"selai", 
+            'telephone exchange', 'water board',
         ]
 
         cleaned = []
@@ -499,7 +551,7 @@ async def run_agent_streaming(
 
     async with AsyncExitStack() as stack:
         try:
-            # --- Warm up Render free-tier server (cold start recovery) ---
+            # --- Warm up Render free-tier server ---
             yield {"type": "thinking", "message": "☀️ Waking up MCP server (may take 30-60s on first use)..."}
             try:
                 warmup_url = server_url.replace("/sse", "/health") if "/sse" in server_url else server_url
@@ -509,7 +561,7 @@ async def run_agent_streaming(
                     timeout=MCP_CONNECT_TIMEOUT
                 )
             except Exception:
-                pass  # Health endpoint may not exist — SSE connect will still work
+                pass
 
             # --- Connect with timeout ---
             yield {"type": "thinking", "message": "🔌 Connecting to MCP server..."}
@@ -628,7 +680,6 @@ async def run_agent_streaming(
                 had_tool_calls = True
                 tool_errors = []
 
-                # --- Execute each tool call ---
                 for tool_call in tool_calls_to_execute:
                     tool_name = tool_call['name']
 
@@ -657,7 +708,6 @@ async def run_agent_streaming(
                         )
                         content_text = clean_tool_output(tool_name, content_text)
 
-                        # Check if the tool itself returned an error in its response
                         is_tool_error = False
                         try:
                             parsed_result = json.loads(content_text)
@@ -706,7 +756,6 @@ async def run_agent_streaming(
                         ))
                         yield {"type": "tool_end", "name": tool_name, "success": False, "preview": err}
 
-                # If there were tool errors, tell the LLM to work with partial data
                 if tool_errors:
                     error_summary = "; ".join(tool_errors)
                     messages.append(SystemMessage(
@@ -734,7 +783,7 @@ async def run_agent_streaming(
             except Exception:
                 pass
 
-            # Attempt 2: If streaming yielded nothing, try ainvoke
+            # Attempt 2: ainvoke fallback
             if not full_response.strip():
                 yield {"type": "thinking", "message": "📝 Generating summary..."}
                 try:
@@ -749,7 +798,7 @@ async def run_agent_streaming(
                 except Exception:
                     pass
 
-            # Attempt 3: If LLM still returned nothing, synthesize from tool data
+            # Attempt 3: Synthesize from tool data
             if not full_response.strip():
                 if had_tool_calls and trip_data:
                     full_response = synthesize_from_trip_data(trip_data)
@@ -779,7 +828,7 @@ async def run_agent_streaming(
 
 
 # =============================================================================
-# CHAT UI — using st.text_area + st.button instead of st.chat_input
+# CHAT UI — st.text_area + st.button
 # =============================================================================
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -792,28 +841,23 @@ for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-# Input area: plain text_area + send button
+# Composer bar
 input_col, btn_col = st.columns([6, 1])
 
 with input_col:
     user_input = st.text_area(
-        "Where do you want to go?",
-        placeholder="e.g., Plan a 3-day trip from Chennai to Goa...",
+        placeholder="Where do you want to go?  e.g., Plan a 3-day trip from Chennai to Goa...",
         height=68,
         key="chat_input_area",
         label_visibility="collapsed",
     )
 
 with btn_col:
-    st.write("")  # spacer to align button with textarea
+    st.write("")
     send_clicked = st.button("Send ➤", use_container_width=True)
 
-# Process on send or Enter (Streamlit reruns on any widget interaction,
-# so we check if there's text and the button was clicked)
 if send_clicked and user_input and user_input.strip():
     prompt = user_input.strip()
-
-    # Clear the text area for next input
     st.session_state["chat_input_area"] = ""
 
     st.session_state.messages.append({"role": "user", "content": prompt})
