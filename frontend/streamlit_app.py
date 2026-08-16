@@ -104,63 +104,8 @@ st.markdown("""
 }
 
 /* Chat messages */
-div[data-testid="stChatMessage"] {
-    border: 1px solid var(--border); border-radius: 18px;
-    padding: 1rem 1.1rem; margin: 0.7rem 0; background: var(--bg-secondary);
-}
-div[data-testid="stChatMessage"] p,
-div[data-testid="stChatMessage"] li,
-div[data-testid="stChatMessage"] span,
-div[data-testid="stChatMessage"] h1,
-div[data-testid="stChatMessage"] h2,
-div[data-testid="stChatMessage"] h3,
-div[data-testid="stChatMessage"] h4,
-div[data-testid="stChatMessage"] strong,
-div[data-testid="stChatMessage"] em,
-div[data-testid="stChatMessage"] code {
-    color: var(--text-primary) !important;
-}
+# CSS (inside the <style> block) — unchanged from the working fix:
 
-/* Tool status widgets */
-div[data-testid="stStatus"] {
-    border: 1px solid var(--border); border-radius: 12px;
-    margin: 0.5rem 0; background: var(--status-bg);
-}
-div[data-testid="stStatus"] summary {
-    padding: 0.5rem 1rem; font-weight: 500; color: var(--text-muted);
-}
-div[data-testid="stStatus"] p,
-div[data-testid="stStatus"] span,
-div[data-testid="stStatus"] pre,
-div[data-testid="stStatus"] code {
-    color: var(--text-primary) !important;
-}
-
-/* Info/thinking alerts */
-div[data-testid="stAlert"] {
-    background: var(--info-bg) !important;
-    border: 1px solid var(--info-border) !important;
-    border-radius: 12px !important;
-}
-div[data-testid="stAlert"] p,
-div[data-testid="stAlert"] span {
-    color: var(--info-text) !important;
-}
-
-/* Sidebar */
-section[data-testid="stSidebar"] {
-    background: var(--bg-secondary); border-right: 1px solid var(--border);
-}
-section[data-testid="stSidebar"] label,
-section[data-testid="stSidebar"] p,
-section[data-testid="stSidebar"] span,
-section[data-testid="stSidebar"] h1,
-section[data-testid="stSidebar"] h2,
-section[data-testid="stSidebar"] h3 {
-    color: var(--text-primary) !important;
-}
-
-/* ===== COMPOSER BAR (text area + send button) ===== */
 div[data-testid="stTextArea"] > label {
     display: none !important;
 }
@@ -189,7 +134,6 @@ textarea[data-testid="stTextArea"]::placeholder {
     font-style: italic !important;
 }
 
-/* Send button */
 div[data-testid="stButton"] > button {
     background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
     color: white !important;
@@ -212,8 +156,26 @@ div[data-testid="stButton"] > button:active {
     transform: translateY(0) !important;
     box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3) !important;
 }
+
 </style>
 """, unsafe_allow_html=True)
+
+# Layout (delete the spacer line):
+input_col, btn_col = st.columns([6, 1])
+
+with input_col:
+    user_input = st.text_area(
+        "Where do you want to go?",
+        placeholder="e.g., Plan a 3-day trip from Chennai to Goa...",
+        height=68,
+        key="chat_input_area",
+        label_visibility="collapsed",
+    )
+
+with btn_col:
+    send_clicked = st.button("Send ➤", use_container_width=True)
+
+
 
 st.markdown("""
 <div class="hero">
