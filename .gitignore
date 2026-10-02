@@ -12,9 +12,13 @@ yarn-error.log*
 .env.production.local
 
 # Build outputs
-dist/
+# NOTE: dist/ is intentionally tracked — this project ships pre-compiled JS
+#       directly from dist/ with no TypeScript build step on the server.
 build/
 *.tsbuildinfo
+
+# Prisma generated client (regenerated during build via `npx prisma generate`)
+generated/
 
 # Logs
 logs/
@@ -69,7 +73,6 @@ jspm_packages/
 
 # Nuxt.js build / generate output
 .nuxt
-dist
 
 # Storybook build outputs
 .out

@@ -28,11 +28,11 @@ let _ready  = false;
 async function loadPrismaClient() {
   if (PrismaClient) return PrismaClient;
   try {
-    const mod = await import('../../generated/prisma/client.js');
+    const mod = await import('@prisma/client');
     PrismaClient = mod.PrismaClient;
     return PrismaClient;
   } catch (err) {
-    console.error('⚠️  DB: generated Prisma client not found — run `npx prisma generate`');
+    console.error('⚠️  DB: @prisma/client not found — run `npx prisma generate`');
     console.error('    DB features will be disabled until then.');
     return null;
   }

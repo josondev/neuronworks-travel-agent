@@ -1,8 +1,8 @@
 // Prisma 7 schema — provider "prisma-client", no url in datasource (set in prisma.config.mjs)
 
 generator client {
-  provider = "prisma-client"
-  output   = "../generated/prisma"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
 }
 
 datasource db {
