@@ -1,0 +1,11 @@
+streamlit
+asyncio
+nest_asyncio
+langchain
+langchain-groq>=0.3.8
+langchain-core
+langchain-openai
+mcp==2.0.0
+pydantic
+httpx
+sse-starlette

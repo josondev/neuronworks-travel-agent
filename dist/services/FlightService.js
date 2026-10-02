@@ -1,125 +1,208 @@
 import axios from 'axios';
 import dotenv from 'dotenv';
-
 dotenv.config();
 
 export class FlightService {
     constructor() {
-        this.apiKey = process.env.AMADEUS_CLIENT_ID || '';
-        this.apiSecret = process.env.AMADEUS_CLIENT_SECRET || '';
-        this.baseUrl = 'https://test.api.amadeus.com/v2';
-        this.accessToken = '';
-        this.tokenExpiry = 0;
+        this.apiKey = process.env.SERPAPI_API_KEY || process.env.SERPAPI_KEY || '';
+        this.baseUrl = 'https://serpapi.com/search.json';
 
-        if (!this.apiKey || this.apiKey === 'test_key_replace_later') {
-            console.warn('⚠️ Amadeus API key not configured. Flight service will return mock data.');
+        // Server-owned aliases. The frontend no longer owns airport codes.
+        this.airportAliases = {
+            chennai: 'MAA', madras: 'MAA',
+            madurai: 'IXM',
+            coimbatore: 'CJB',
+            colombo: 'CMB',
+            bangalore: 'BLR', bengaluru: 'BLR',
+            hyderabad: 'HYD',
+            delhi: 'DEL', 'new delhi': 'DEL',
+            mumbai: 'BOM', bombay: 'BOM',
+            kochi: 'COK',
+            ooty: 'CJB', udhagamandalam: 'CJB',
+            kodaikanal: 'IXM',
+            goa: 'GOI',
+            jaipur: 'JAI',
+            ahmedabad: 'AMD',
+            pune: 'PNQ',
+            kolkata: 'CCU',
+            dubai: 'DXB',
+            singapore: 'SIN',
+            paris: 'CDG',
+            london: 'LHR',
+            rome: 'FCO',
+            tokyo: 'HND',
+            'new york': 'JFK'
+        };
+
+        if (!this.apiKey) {
+            console.warn('⚠️ FlightService: SERPAPI_API_KEY/SERPAPI_KEY is not configured.');
         }
     }
 
-    async getAccessToken() {
-        if (this.accessToken && Date.now() < this.tokenExpiry) {
-            return this.accessToken;
+    async resolveAirportCode(value) {
+        const raw = String(value || '').trim();
+        if (!raw) throw new Error('Airport/city is required for flight search.');
+
+        if (/^[A-Za-z]{3}$/.test(raw)) {
+            return raw.toUpperCase();
         }
-        try {
-            const response = await axios.post('https://test.api.amadeus.com/v1/security/oauth2/token', 
-                new URLSearchParams({
-                    grant_type: 'client_credentials',
-                    client_id: this.apiKey,
-                    client_secret: this.apiSecret,
-                }), {
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                }
-            );
-            this.accessToken = response.data.access_token;
-            this.tokenExpiry = Date.now() + (response.data.expires_in - 300) * 1000;
-            return this.accessToken;
-        } catch (error) {
-            console.error('❌ Failed to get Amadeus access token:', error.message);
-            throw new Error('Authentication failed with Amadeus API');
+
+        const alias = this.airportAliases[raw.toLowerCase()];
+        if (alias) return alias;
+
+        if (!this.apiKey) {
+            throw new Error(`Could not resolve airport for "${raw}" because SERPAPI_API_KEY is not configured.`);
         }
+
+        // Server-side fallback: use SerpApi Google Search to resolve an unfamiliar
+        // city to an IATA airport code. The LLM/client is never involved here.
+        const response = await axios.get(this.baseUrl, {
+            params: {
+                engine: 'google',
+                api_key: this.apiKey,
+                q: `${raw} nearest commercial airport IATA code`,
+                num: 5,
+                hl: 'en'
+            },
+            timeout: 7000
+        });
+
+        const chunks = [];
+        for (const item of (response.data?.organic_results || []).slice(0, 5)) {
+            chunks.push(String(item.title || ''));
+            chunks.push(String(item.snippet || ''));
+            chunks.push(String(item.link || ''));
+        }
+        const text = chunks.join(' ');
+
+        const matches = [
+            ...text.matchAll(/(?:IATA(?:\s*(?:code|airport code))?\s*[:\-]?\s*|\bIATA\s+)([A-Z]{3})\b/gi),
+            ...text.matchAll(/\(([A-Z]{3})\)\s*(?:International|Intl)?\s*Airport/gi)
+        ];
+
+        for (const match of matches) {
+            const code = String(match[1] || '').toUpperCase();
+            if (/^[A-Z]{3}$/.test(code) && !['IATA', 'THE', 'AIR'].includes(code)) {
+                console.error(`🧭 Resolved airport "${raw}" → ${code} via SerpApi search`);
+                return code;
+            }
+        }
+
+        throw new Error(`Could not resolve a practical commercial airport for "${raw}".`);
     }
 
-    async searchFlights(params) {
-        if (!this.apiKey || this.apiKey === 'test_key_replace_later') {
-            return this.getMockFlightData(params);
+    async searchFlights(params = {}) {
+        if (!this.apiKey) {
+            return {
+                error: 'Flight search unavailable: SERPAPI_API_KEY (or SERPAPI_KEY) is not configured on the server.',
+                results: []
+            };
         }
+
+        const departDate = String(params.departDate || '').trim();
+        const returnDate = params.returnDate ? String(params.returnDate).trim() : '';
+        const passengers = Math.max(1, Number(params.passengers) || 1);
+
+        if (!departDate || !/^\d{4}-\d{2}-\d{2}$/.test(departDate)) {
+            return { error: 'Flight search requires departDate in YYYY-MM-DD format.', results: [] };
+        }
+
         try {
-            const token = await this.getAccessToken();
-            const searchParams = {
-                originLocationCode: params.origin.toUpperCase(),
-                destinationLocationCode: params.destination.toUpperCase(),
-                departureDate: params.departDate,
-                adults: params.passengers,
-                max: 10
+            const [origin, destination] = await Promise.all([
+                this.resolveAirportCode(params.origin),
+                this.resolveAirportCode(params.destination)
+            ]);
+
+            const requestParams = {
+                engine: 'google_flights',
+                api_key: this.apiKey,
+                departure_id: origin,
+                arrival_id: destination,
+                outbound_date: departDate,
+                type: returnDate ? 1 : 2,
+                adults: passengers,
+                travel_class: 1,
+                sort_by: 2,
+                currency: 'USD',
+                gl: 'in',
+                hl: 'en'
             };
 
-            if (params.returnDate) searchParams.returnDate = params.returnDate;
+            if (returnDate) requestParams.return_date = returnDate;
 
-            const response = await axios.get(`${this.baseUrl}/shopping/flight-offers`, {
-                params: searchParams,
-                headers: { Authorization: `Bearer ${token}` },
+            const response = await axios.get(this.baseUrl, {
+                params: requestParams,
+                timeout: 30000
             });
 
-            return this.transformAmadeusResponse(response.data);
+            if (response.data?.error) throw new Error(response.data.error);
+
+            const flights = this.transformSerpApiResponse(response.data);
+
+            if (!flights.length) {
+                return {
+                    error: `No live Google Flights results were returned for ${origin} → ${destination} on ${departDate}${returnDate ? ` to ${returnDate}` : ''}.`,
+                    results: [],
+                    searchLink: response.data?.search_metadata?.google_flights_url || null,
+                    source: 'Google Flights via SerpApi'
+                };
+            }
+
+            return flights;
         } catch (error) {
-            console.error('❌ Amadeus API error:', error.response?.data || error.message);
-            return this.getMockFlightData(params);
+            const providerError = error.response?.data?.error || error.response?.data?.message || error.message;
+            console.error('❌ Google Flights / SerpApi error:', error.response?.data || error.message);
+            return {
+                error: `Live flight search failed: ${providerError}`,
+                results: []
+            };
         }
     }
 
-    transformAmadeusResponse(data) {
-        if (!data.data || data.data.length === 0) return [];
-        
+    transformSerpApiResponse(data = {}) {
+        const rawFlights = [
+            ...(Array.isArray(data.best_flights) ? data.best_flights : []),
+            ...(Array.isArray(data.other_flights) ? data.other_flights : [])
+        ];
+
         const uniqueFlights = new Map();
-        data.data.forEach((offer) => {
-            const firstItinerary = offer.itineraries[0];
-            const firstSegment = firstItinerary.segments[0];
-            const lastSegment = firstItinerary.segments[firstItinerary.segments.length - 1];
-            const carrierCode = firstSegment.carrierCode;
-            const airline = data.dictionaries?.carriers?.[carrierCode] || carrierCode;
-            const departure = firstSegment.departure.at;
-            const price = parseFloat(offer.price.total);
-            
-            const key = `${carrierCode}-${departure}`;
-            
-            if (!uniqueFlights.has(key) || price < uniqueFlights.get(key).price) {
+        const googleFlightsUrl = data.search_metadata?.google_flights_url || null;
+
+        for (const offer of rawFlights) {
+            const segments = Array.isArray(offer.flights) ? offer.flights : [];
+            if (!segments.length) continue;
+
+            const firstSegment = segments[0];
+            const lastSegment = segments[segments.length - 1];
+            const price = Number(offer.price);
+            if (!Number.isFinite(price)) continue;
+
+            const departure = firstSegment.departure_airport?.time || '';
+            const arrival = lastSegment.arrival_airport?.time || '';
+            const airlines = [...new Set(segments.map(s => s.airline).filter(Boolean))];
+            const durationMinutes = segments.reduce((total, segment) => total + (Number(segment.duration) || 0), 0);
+            const duration = durationMinutes > 0
+                ? `${Math.floor(durationMinutes / 60)}h ${durationMinutes % 60}m`
+                : 'Unknown';
+            const key = [airlines.join(','), firstSegment.flight_number || '', departure, arrival, price].join('|');
+
+            if (!uniqueFlights.has(key)) {
                 uniqueFlights.set(key, {
-                    airline: airline,
-                    price: price,
-                    currency: offer.price.currency,
-                    departure: departure,
-                    arrival: lastSegment.arrival.at,
-                    duration: firstItinerary.duration.replace('PT', '').toLowerCase(),
-                    stops: firstItinerary.segments.length - 1,
-                    bookingLink: `Flight ID: ${offer.id}`
+                    airline: airlines.join(', ') || 'Unknown airline',
+                    price,
+                    currency: data.search_parameters?.currency || 'USD',
+                    departure,
+                    arrival,
+                    duration,
+                    stops: Math.max(0, segments.length - 1),
+                    searchLink: googleFlightsUrl,
+                    source: 'Google Flights via SerpApi'
                 });
             }
-        });
-        return Array.from(uniqueFlights.values()).slice(0, 10);
-    }
+        }
 
-    getMockFlightData(params) {
-        const basePrice = 350;
-        const priceVariation = Math.floor(Math.random() * 200);
-        return [
-            {
-                airline: 'United Airlines',
-                price: basePrice + priceVariation,
-                currency: 'USD',
-                departure: `${params.departDate}T08:00:00`,
-                arrival: `${params.departDate}T11:30:00`,
-                duration: '3h 30m',
-                stops: 0,
-            },
-            {
-                airline: 'Delta Air Lines',
-                price: basePrice + priceVariation - 50,
-                currency: 'USD',
-                departure: `${params.departDate}T10:15:00`,
-                arrival: `${params.departDate}T15:45:00`,
-                duration: '5h 30m',
-                stops: 1,
-            }
-        ];
+        return Array.from(uniqueFlights.values())
+            .sort((a, b) => a.price - b.price)
+            .slice(0, 10);
     }
 }

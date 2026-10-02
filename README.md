@@ -15,7 +15,7 @@ A Model Context Protocol (MCP) server for comprehensive travel planning, providi
 1. Clone the repository:
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/josondev/neuronworks-travel-agent
 cd travel-mcp-server
 ```
 
@@ -232,6 +232,3 @@ If you encounter any issues or have questions:
 - [ ] Integration with calendar services
 - [ ] Mobile app companion
 
----
-
-**Note**: Remember to keep your API keys secure and never commit them to version control. Always use environment variables for sensitive configuration.
