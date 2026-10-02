@@ -2,12 +2,34 @@ services:
   - type: web
     name: travel-mcp
     env: node
-    region: oregon
+    region: singapore
     plan: free
-    buildCommand: npm install && npm run build
+    buildCommand: npm install && npx prisma generate && npm run build
     startCommand: npm start
+    healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
         value: 3000
+      # Auto-injected by Render when you attach the PostgreSQL addon below.
+      # Copy the "Internal Database URL" from the addon dashboard here.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: travel-mcp-db
+          property: connectionString
+      - key: SERPAPI_API_KEY
+        sync: false
+      - key: OPENWEATHER_API_KEY
+        sync: false
+      - key: EXCHANGE_API_KEY
+        sync: false
+      - key: GEOAPIFY_API_KEY
+        sync: false
+
+databases:
+  - name: travel-mcp-db
+    plan: free
+    region: singapore
+    databaseName: travel_mcp
+    user: travel_mcp_user

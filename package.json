@@ -11,7 +11,11 @@
     "build": "echo 'Build complete (dist already compiled)'",
     "start": "node dist/index.js",
     "dev": "node --loader ts-node/esm src/index.ts",
-    "watch": "nodemon --exec node --loader ts-node/esm src/index.ts"
+    "watch": "nodemon --exec node --loader ts-node/esm src/index.ts",
+    "generate": "prisma generate",
+    "migrate:dev": "prisma migrate dev",
+    "migrate:deploy": "prisma migrate deploy",
+    "db:studio": "prisma studio"
   },
   "keywords": [
     "mcp",
@@ -22,11 +26,16 @@
   "license": "ISC",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.13.2",
+    "@prisma/adapter-pg": "^7.10.0",
+    "@prisma/client": "^7.10.0",
     "@types/uuid": "^10.0.0",
     "axios": "^1.13.4",
     "cors": "^2.8.6",
     "dotenv": "^17.2.4",
     "express": "^5.2.1",
+    "node-fetch": "^3.3.2",
+    "pg": "^8.23.1",
+    "prisma": "^7.10.0",
     "uuid": "^13.0.0",
     "zod": "^3.25.67"
   },
