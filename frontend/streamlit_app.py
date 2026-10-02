@@ -523,13 +523,14 @@ async def run_agent_streaming(
                     ))
 
             # =============================================================
-            # FINAL ANSWER — 3-tier fallback (THIS IS THE KEY FIX)
+            # FINAL ANSWER — use plain llm (no tools) so model writes prose
             # =============================================================
             full_response = ""
 
-            # Tier 1: Stream tokens
+            # Tier 1: Stream with plain llm (tools unbound → forces text answer)
+            yield {"type": "thinking", "message": "📝 Writing your travel plan..."}
             try:
-                async for chunk in llm_with_tools.astream(messages):
+                async for chunk in llm.astream(messages):
                     if chunk.content:
                         s = chunk.content.strip()
                         if s.startswith("[") and '"type": "function"' in s: continue
@@ -539,11 +540,10 @@ async def run_agent_streaming(
             except Exception:
                 pass
 
-            # Tier 2: ainvoke fallback if stream was empty
+            # Tier 2: ainvoke with plain llm if stream was empty
             if not full_response.strip():
-                yield {"type": "thinking", "message": "📝 Generating summary..."}
                 try:
-                    fb = await asyncio.wait_for(llm_with_tools.ainvoke(messages), timeout=LLM_INVOKE_TIMEOUT)
+                    fb = await asyncio.wait_for(llm.ainvoke(messages), timeout=LLM_INVOKE_TIMEOUT)
                     if fb.content and fb.content.strip():
                         full_response = fb.content
                         for ch in full_response:
@@ -551,7 +551,7 @@ async def run_agent_streaming(
                 except Exception:
                     pass
 
-            # Tier 3: Synthesize from tool data if LLM still empty
+            # Tier 3: Last resort — synthesize from raw tool data
             if not full_response.strip():
                 if had_tool_calls and trip_data:
                     full_response = synthesize_from_trip_data(trip_data)
