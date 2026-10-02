@@ -1,5 +1,3 @@
-// Prisma 7 schema — provider "prisma-client", no url in datasource (set in prisma.config.mjs)
-
 generator client {
   provider      = "prisma-client-js"
   binaryTargets = ["native", "debian-openssl-3.0.x"]
@@ -9,27 +7,20 @@ datasource db {
   provider = "postgresql"
 }
 
-// ---------------------------------------------------------------------------
-// users — one row per SSE session key. No auth; just identity anchor.
-// ---------------------------------------------------------------------------
 model User {
-  id         String   @id @default(uuid())
-  sessionKey String   @unique  // SSE sessionId from the MCP transport
-  createdAt  DateTime @default(now())
-
-  searches      TripSearch[]
-  itineraries   SavedItinerary[]
-  budgets       BudgetEstimate[]
+  id          String           @id @default(uuid())
+  sessionKey  String           @unique
+  createdAt   DateTime         @default(now())
+  budgets     BudgetEstimate[]
+  itineraries SavedItinerary[]
+  searches    TripSearch[]
 }
 
-// ---------------------------------------------------------------------------
-// search_cache — cache external API responses by tool + param hash, with TTL
-// ---------------------------------------------------------------------------
 model SearchCache {
   id         String   @id @default(uuid())
-  cacheKey   String   @unique  // sha256(toolName + JSON.stringify(sortedArgs))
+  cacheKey   String   @unique
   toolName   String
-  resultJson String   @db.Text
+  resultJson String
   expiresAt  DateTime
   createdAt  DateTime @default(now())
 
@@ -38,47 +29,36 @@ model SearchCache {
   @@map("search_cache")
 }
 
-// ---------------------------------------------------------------------------
-// trip_searches — every tool call that ran, per user session
-// ---------------------------------------------------------------------------
 model TripSearch {
   id         String   @id @default(uuid())
   userId     String
   toolName   String
-  paramsJson String   @db.Text
-  resultJson String   @db.Text
+  paramsJson String
+  resultJson String
   createdAt  DateTime @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
   @@index([toolName])
   @@map("trip_searches")
 }
 
-// ---------------------------------------------------------------------------
-// saved_itineraries — user-named trip plans
-// ---------------------------------------------------------------------------
 model SavedItinerary {
-  id             String   @id @default(uuid())
-  userId         String
-  title          String
-  destination    String
-  startDate      String?
-  endDate        String?
-  notes          String?  @db.Text
-  itineraryJson  String   @db.Text
-  createdAt      DateTime @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id            String   @id @default(uuid())
+  userId        String
+  title         String
+  destination   String
+  startDate     String?
+  endDate       String?
+  notes         String?
+  itineraryJson String
+  createdAt     DateTime @default(now())
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@map("saved_itineraries")
 }
 
-// ---------------------------------------------------------------------------
-// budget_estimates — stored budget calculations per user session
-// ---------------------------------------------------------------------------
 model BudgetEstimate {
   id            String   @id @default(uuid())
   userId        String
@@ -87,10 +67,9 @@ model BudgetEstimate {
   travelers     Int
   budgetLevel   String
   totalUsd      Float
-  breakdownJson String   @db.Text
+  breakdownJson String
   createdAt     DateTime @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@map("budget_estimates")

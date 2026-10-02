@@ -1,7 +1,8 @@
-// Prisma 7 config file — replaces url in schema.prisma datasource block.
-// DATABASE_URL is read from .env via dotenv, loaded explicitly in src/db/prisma.js.
-
 import { defineConfig } from 'prisma/config';
+import { config } from 'dotenv';
+
+// Load .env so DATABASE_URL is available to prisma studio / migrate / generate
+config();
 
 export default defineConfig({
   schema: 'prisma/schema.prisma',
