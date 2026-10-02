@@ -387,7 +387,8 @@ async def run_agent_streaming(
                 model="meta-llama/llama-3.3-70b-instruct",
                 api_key=api_key, base_url="https://openrouter.ai/api/v1",
                 default_headers={"X-Title": "AI Travel Agent"},
-                temperature=0,
+                temperature=0.3,
+                max_tokens=4096,
                 request_timeout=LLM_INVOKE_TIMEOUT,
                 max_retries=2,
             )
@@ -523,27 +524,44 @@ async def run_agent_streaming(
                     ))
 
             # =============================================================
-            # FINAL ANSWER — use plain llm (no tools) so model writes prose
+            # FINAL ANSWER — clean prompt with tool data, plain llm
             # =============================================================
             full_response = ""
-
-            # Tier 1: Stream with plain llm (tools unbound → forces text answer)
             yield {"type": "thinking", "message": "📝 Writing your travel plan..."}
+
+            # Build a focused final prompt instead of replaying entire history
+            user_question = next(
+                (m["content"] for m in reversed(chat_history) if m["role"] == "user"), ""
+            )
+            tool_summary = json.dumps(trip_data, separators=(',', ':'))
+            if len(tool_summary) > 6000:
+                tool_summary = tool_summary[:6000] + "...[truncated]"
+
+            final_messages = [
+                SystemMessage(content=(
+                    "You are an expert travel agent. Using ONLY the real data below from live tools, "
+                    "write a complete, well-formatted travel plan. Include: flight options with exact prices, "
+                    "hotel recommendations, top attractions, weather summary, and a total budget breakdown. "
+                    "Format with markdown headers and bullet points. Be detailed and helpful. "
+                    "Do NOT say you cannot help. Use the data provided.\n\n"
+                    f"LIVE TOOL DATA:\n{tool_summary}"
+                )),
+                HumanMessage(content=user_question),
+            ]
+
+            # Tier 1: stream
             try:
-                async for chunk in llm.astream(messages):
+                async for chunk in llm.astream(final_messages):
                     if chunk.content:
-                        s = chunk.content.strip()
-                        if s.startswith("[") and '"type": "function"' in s: continue
-                        if s.startswith("{") and '"type": "function"' in s: continue
                         full_response += chunk.content
                         yield {"type": "token", "content": chunk.content}
-            except Exception:
+            except Exception as e:
                 pass
 
-            # Tier 2: ainvoke with plain llm if stream was empty
+            # Tier 2: ainvoke fallback
             if not full_response.strip():
                 try:
-                    fb = await asyncio.wait_for(llm.ainvoke(messages), timeout=LLM_INVOKE_TIMEOUT)
+                    fb = await asyncio.wait_for(llm.ainvoke(final_messages), timeout=LLM_INVOKE_TIMEOUT)
                     if fb.content and fb.content.strip():
                         full_response = fb.content
                         for ch in full_response:
@@ -551,7 +569,7 @@ async def run_agent_streaming(
                 except Exception:
                     pass
 
-            # Tier 3: Last resort — synthesize from raw tool data
+            # Tier 3: raw data fallback
             if not full_response.strip():
                 if had_tool_calls and trip_data:
                     full_response = synthesize_from_trip_data(trip_data)
